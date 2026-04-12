@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "Tender": {
+      "title": "Tender",
+      "description": "A public procurement tender opportunity.",
+      "type": "object",
+      "properties": {
+        "reference": { "type": "string", "description": "Unique reference number of the tender." },
+        "title": { "type": "string", "description": "Title or description of the tender." },
+        "organization": { "type": "string", "description": "The public body issuing the tender." },
+        "category": { "type": "string", "description": "Category of the tender (e.g., Travaux, Fournitures)." },
+        "region": { "type": "string", "description": "Geographic region of the tender." },
+        "deadline": { "type": "string", "format": "date-time", "description": "Submission deadline." },
+        "budget": { "type": "number", "description": "Estimated budget in MAD." },
+        "published_at": { "type": "string", "format": "date-time", "description": "When the tender was published." },
+        "url": { "type": "string", "description": "Link to the tender details." },
+        "is_live": { "type": "boolean", "description": "Whether the tender is currently active." }
+      },
+      "required": ["reference", "title", "organization", "deadline"]
+    },
+    "ScrapingStats": {
+      "title": "ScrapingStats",
+      "description": "Statistics about the last scraping operation.",
+      "type": "object",
+      "properties": {
+        "scraped_at": { "type": "string", "format": "date-time" },
+        "new_tenders": { "type": "number" },
+        "status": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/tenders/{tenderId}": {
+      "schema": "Tender",
+      "description": "Collection of all scraped tenders."
+    },
+    "/stats/last_scrape": {
+      "schema": "ScrapingStats",
+      "description": "Singleton document for the latest scraping statistics."
+    }
+  }
+}

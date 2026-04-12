@@ -1,0 +1,5 @@
+{
+  "name": "PMMP Tender Tracker",
+  "description": "A real-time monitoring and notification system for the Moroccan Public Procurement Portal (PMMP).",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: tenders
+    // Fields: reference, title, organization, category, region, deadline, budget, published_at, url, is_live
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isValidTender(data) {
+      return data.reference is string && data.reference.size() > 0 &&
+             data.title is string && data.title.size() > 0 &&
+             data.organization is string &&
+             data.deadline is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /tenders/{tenderId} {
+      // Allow anyone to read tenders for the dashboard
+      allow read: if true;
+      // Only allow authenticated users (or the server) to write
+      allow write: if isAuthenticated();
+    }
+
+    match /stats/{statId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+  }
+}
