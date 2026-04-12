@@ -2,7 +2,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { format, addDays } from 'date-fns';
 import crypto from 'crypto';
-import { adminDb } from '../lib/firebase-admin';
+import { adminDbWrapper as adminDb } from '../lib/firebase-admin';
 import { sendTelegramMessage, formatTenderMessage } from './telegram';
 
 const PMMP_BASE = "https://www.marchespublics.gov.ma/";
@@ -49,29 +49,46 @@ export async function checkConnectivity() {
   }
 }
 
-const SECTORS = ["1.12", "1.13", "1.15", "1.17", "2.11", "3.13"];
+const SECTORS = [
+  "1.12", "1.13", "1.15", "1.17", "2.11", "3.13", 
+  "1.11", "1.14", "1.16", "2.12", "2.13", "3.11", "3.12",
+  "1.18", "1.19", "2.14", "2.15", "3.14", "3.15"
+];
 
-export async function scrapePmmp() {
+export async function scrapePmmp(isQuick: boolean = false) {
   const tenders: any[] = [];
   const seenRefs = new Set<string>();
   
   try {
-    // Try general search first
-    await scrapeUrl(SEARCH_URL, tenders, seenRefs);
+    await getCookies();
+    console.log("🕵️ Starting PMMP scrape...");
+    // Always scrape the main search page
+    let currentUrl: string | null = SEARCH_URL;
+    let pagesProcessed = 0;
+    const maxPages = isQuick ? 8 : 20; // Even more pages
+
+    while (currentUrl && pagesProcessed < maxPages) {
+      const nextUrl: string | null = await scrapeUrl(currentUrl, tenders, seenRefs, isQuick);
+      currentUrl = nextUrl;
+      pagesProcessed++;
+      if (currentUrl) await new Promise(resolve => setTimeout(resolve, 800));
+    }
     
-    // Try top sectors to get more data
-    for (const sector of SECTORS) {
+    // Scrape more sectors
+    const sectorsToScrape = isQuick ? SECTORS.slice(0, 12) : SECTORS;
+    
+    for (const sector of sectorsToScrape) {
       const sectorUrl = `${SEARCH_URL}&domaineActivite=${sector}`;
-      await scrapeUrl(sectorUrl, tenders, seenRefs);
+      await scrapeUrl(sectorUrl, tenders, seenRefs, isQuick);
       // Small delay to be polite
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 400));
     }
   } catch (e) {
     console.warn("Error during scrape loop:", e);
   }
 
   if (tenders.length > 0) {
-    console.log(`✨ Scraped ${tenders.length} live tenders across multiple sectors`);
+    console.log(`✨ Scraped ${tenders.length} live tenders`);
     return tenders;
   }
 
@@ -103,23 +120,113 @@ export async function scrapePmmp() {
   return newTenders;
 }
 
-async function scrapeUrl(url: string, tenders: any[], seenRefs: Set<string>) {
+async function scrapeTenderDetails(url: string) {
+  try {
+    const response = await axios.get(url, { 
+      headers: { 
+        ...HEADERS, 
+        "Referer": SEARCH_URL,
+        "Cookie": cookies.join('; ')
+      }, 
+      timeout: 12000 
+    });
+    
+    if (response.status === 200) {
+      const html = response.data;
+      if (!html.toLowerCase().includes("estimation")) {
+        console.warn(`⚠️ Detail page for ${url} does not contain 'Estimation' text.`);
+        return null;
+      }
+
+      const $ = cheerio.load(html);
+      let budget: number | null = null;
+      
+      // PMMP detail pages often use a table or a list of divs
+      $('tr, div, p, td, th').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.toLowerCase().includes("estimation") && text.toLowerCase().includes("dhs")) {
+          // Look for patterns like "5 674 424,40" or "19304512"
+          const matches = text.match(/[\d\s\u00A0]+[.,]\d{2}/g) || text.match(/\d[\d\s\u00A0]+\d/g);
+          if (matches) {
+            for (const match of matches) {
+              const cleaned = match.replace(/[\s\u00A0]/g, '').replace(',', '.');
+              const num = parseFloat(cleaned);
+              if (!isNaN(num) && num > 1000) {
+                budget = num;
+                return false;
+              }
+            }
+          }
+
+          // Check siblings
+          let siblingText = $(el).next().text().trim();
+          if (!siblingText || siblingText.length < 2) {
+            siblingText = $(el).closest('tr').find('td').last().text().trim();
+          }
+
+          if (siblingText) {
+            const cleaned = siblingText.replace(/[\s\u00A0]/g, '').replace(',', '.').replace(/[^\d.]/g, '');
+            const num = parseFloat(cleaned);
+            if (!isNaN(num) && num > 1000) {
+              budget = num;
+              return false;
+            }
+          }
+        }
+      });
+
+      if (budget) {
+        console.log(`✅ Extracted budget: ${budget} for ${url}`);
+      } else {
+        console.warn(`❓ Could not extract budget from detail page: ${url}`);
+      }
+
+      return budget;
+    } else {
+      console.warn(`⚠️ Detail page returned status ${response.status} for ${url}`);
+    }
+  } catch (e) {
+    console.warn(`⚠️ Failed to fetch details for ${url}:`, e instanceof Error ? e.message : String(e));
+  }
+  return null;
+}
+
+let cookies: string[] = [];
+
+async function getCookies() {
+  try {
+    const res = await axios.get(PMMP_BASE, { headers: HEADERS, timeout: 8000 });
+    if (res.headers['set-cookie']) {
+      cookies = res.headers['set-cookie'];
+      console.log("🍪 Cookies obtained");
+    }
+  } catch (e) {
+    console.warn("⚠️ Failed to get cookies:", e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function scrapeUrl(url: string, tenders: any[], seenRefs: Set<string>, isQuick: boolean): Promise<string | null> {
   try {
     console.log(`🌐 Scraping: ${url}`);
     const response = await axios.get(url, {
-      headers: HEADERS,
-      timeout: 20000,
+      headers: { 
+        ...HEADERS, 
+        "Cookie": cookies.join('; ')
+      },
+      timeout: 25000,
       validateStatus: () => true
     });
 
     if (response.status === 200) {
       const $ = cheerio.load(response.data);
       
-      $('.table-results tr').each((i, el) => {
+      const rows = $('.table-results tr').get();
+      
+      for (const el of rows) {
         const cells = $(el).find('td');
         if (cells.length >= 5) {
           const reference = $(el).find('.ref').text().trim();
-          if (!reference || seenRefs.has(reference)) return;
+          if (!reference || seenRefs.has(reference)) continue;
           seenRefs.add(reference);
 
           // Extract Objet
@@ -166,37 +273,56 @@ async function scrapeUrl(url: string, tenders: any[], seenRefs: Set<string>) {
           const category = $(el).find('[id*="panelBlocCategorie"]').text().trim() || "Non spécifié";
 
           if (title && reference) {
+            // Fetch budget from detail page
+            console.log(`📄 Fetching details for: ${reference}`);
+            const budget = await scrapeTenderDetails(fullUrl);
+            // Small delay between detail requests to be safe
+            await new Promise(resolve => setTimeout(resolve, 300));
+
             tenders.push({
               title,
               organization: organization || "Organisme Public",
               deadline: deadline.split(' ')[0], // Just the date part
               category,
               region: region.split('\n')[0].trim(),
-              budget: null,
+              budget,
               reference,
               url: fullUrl,
               is_live: true
             });
           }
         }
-      });
+      }
+
+      // Find next page link
+      const nextLink = $('.pagination a, a[title*="Suivant"], a:contains(">")').filter((i, el) => {
+        const t = $(el).text().toLowerCase() + ($(el).attr('title') || '').toLowerCase();
+        return t.includes('>') || t.includes('suivant');
+      }).first().attr('href');
+      
+      if (nextLink && nextLink !== "#") {
+        return nextLink.startsWith('http') ? nextLink : `${PMMP_BASE}${nextLink.startsWith('/') ? nextLink.substring(1) : nextLink}`;
+      }
     }
   } catch (e) {
     console.warn(`❌ Scrape failed for ${url}:`, e instanceof Error ? e.message : String(e));
   }
+  return null;
 }
 
-export async function scrapeAndNotify(broadcast: (msg: any) => void) {
-  console.log(`🔍 Scraping PMMP... [${format(new Date(), 'HH:mm:ss')}]`);
-  const raw = await scrapePmmp();
+export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: boolean = false) {
+  console.log(`🔍 Scraping PMMP... [${format(new Date(), 'HH:mm:ss')}] (Quick: ${isQuick})`);
+  const raw = await scrapePmmp(isQuick);
   let newCount = 0;
 
   const tendersRef = adminDb.collection('tenders');
+  console.log(`📦 Processing ${raw.length} tenders...`);
 
   for (const item of raw) {
     // Check if exists in Firestore
     const snapshot = await tendersRef.where('reference', '==', item.reference).limit(1).get();
     const existingDoc = snapshot.empty ? null : snapshot.docs[0];
+    const existingData = existingDoc ? existingDoc.data() : null;
     
     let deadlineDate: Date;
     try {
@@ -223,11 +349,11 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void) {
       url: item.url,
       is_live: item.is_live ? 1 : 0,
       reference: item.reference,
-      published_at: existingDoc ? existingDoc.data().published_at : new Date().toISOString()
+      published_at: existingData ? existingData.published_at : new Date().toISOString()
     };
 
     if (existingDoc) {
-      await existingDoc.ref.update(tenderData);
+      await tendersRef.doc(existingDoc.id).update(tenderData);
     } else {
       const newDoc = await tendersRef.add(tenderData);
       newCount++;

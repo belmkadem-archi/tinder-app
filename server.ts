@@ -5,7 +5,7 @@ import cors from "cors";
 import { WebSocketServer, WebSocket } from "ws";
 import cron from "node-cron";
 import fs from "fs";
-import { adminDb } from "./src/lib/firebase-admin";
+import { adminDbWrapper as adminDb } from "./src/lib/firebase-admin";
 import { scrapeAndNotify, checkConnectivity } from "./src/services/scraper";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -76,8 +76,8 @@ async function startServer() {
       const tendersSnapshot = await adminDb.collection('tenders').get();
       const items = tendersSnapshot.docs.map((doc: any) => doc.data());
       
-      const lastScrapeDoc = await adminDb.collection('stats').doc('last_scrape').get();
-      const lastScrape = lastScrapeDoc.exists ? lastScrapeDoc.data() : null;
+      const lastScrapeSnapshot = await adminDb.collection('stats').doc('last_scrape').get();
+      const lastScrape = !lastScrapeSnapshot.empty ? lastScrapeSnapshot.docs[0].data() : null;
 
       const categories: any = {};
       const regions: any = {};
@@ -120,8 +120,14 @@ async function startServer() {
   });
 
   app.post("/api/scrape/trigger", async (req, res) => {
-    scrapeAndNotify(broadcast);
-    res.json({ message: "Scraping triggered" });
+    try {
+      console.log("🚀 Manual scrape triggered via API");
+      await scrapeAndNotify(broadcast, true); // Await and use quick mode for Vercel
+      res.json({ message: "Scraping completed successfully" });
+    } catch (error) {
+      console.error("❌ Manual scrape failed:", error);
+      res.status(500).json({ error: String(error) });
+    }
   });
 
   app.post("/api/cleanup/trigger", async (req, res) => {

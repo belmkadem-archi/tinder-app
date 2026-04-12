@@ -58,6 +58,9 @@ export default function App() {
   const [isScraping, setIsScraping] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
   const [connectivity, setConnectivity] = useState<{ status: string; code?: number; error?: string } | null>(null);
+  const [page, setPage] = useState(1);
+  const [totalTenders, setTotalTenders] = useState(0);
+  const pageSize = 20;
 
   const fetchConnectivity = async () => {
     try {
@@ -73,7 +76,7 @@ export default function App() {
     try {
       setLoading(true);
       const [tendersRes, statsRes, filtersRes] = await Promise.all([
-        fetch(`/api/tenders?search=${search}&category=${selectedCategory === 'All' ? '' : selectedCategory}&region=${selectedRegion === 'All' ? '' : selectedRegion}&size=100`),
+        fetch(`/api/tenders?page=${page}&size=${pageSize}&search=${search}&category=${selectedCategory === 'All' ? '' : selectedCategory}&region=${selectedRegion === 'All' ? '' : selectedRegion}`),
         fetch('/api/stats'),
         fetch('/api/filters')
       ]);
@@ -84,6 +87,7 @@ export default function App() {
 
       if (tendersData && Array.isArray(tendersData.items)) {
         setTenders(tendersData.items);
+        setTotalTenders(tendersData.total || 0);
       }
       if (statsData && !statsData.error) {
         setStats(statsData);
@@ -99,8 +103,13 @@ export default function App() {
   };
 
   useEffect(() => {
+    setPage(1);
     fetchData();
   }, [search, selectedCategory, selectedRegion]);
+
+  useEffect(() => {
+    fetchData();
+  }, [page]);
 
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -492,7 +501,7 @@ export default function App() {
                       <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold animate-pulse">Expiring Soon</span>
                     )}
                   </div>
-                  <span className="text-xs text-gray-500 font-medium">{processedTenders.length} results found</span>
+                  <span className="text-xs text-gray-500 font-medium">{totalTenders} results found</span>
                 </div>
 
                 <AnimatePresence mode="popLayout">
@@ -508,83 +517,107 @@ export default function App() {
                       <p className="text-gray-400">No tenders match your filters.</p>
                     </div>
                   ) : (
-                    processedTenders.map((tender) => (
-                      <motion.div
-                        key={tender.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        layout
-                      >
-                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 group">
-                          <div className="flex flex-col md:flex-row justify-between gap-6">
-                            <div className="flex-1 space-y-3">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                {tender.is_live ? (
-                                  <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-[9px] font-bold flex items-center gap-1">
-                                    <Zap className="w-2.5 h-2.5" />
-                                    LIVE
+                    <>
+                      {processedTenders.map((tender) => (
+                        <motion.div
+                          key={tender.id}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          layout
+                        >
+                          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 group">
+                            <div className="flex flex-col md:flex-row justify-between gap-6">
+                              <div className="flex-1 space-y-3">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {tender.is_live ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-[9px] font-bold flex items-center gap-1">
+                                      <Zap className="w-2.5 h-2.5" />
+                                      LIVE
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[9px] font-bold flex items-center gap-1">
+                                      <Info className="w-2.5 h-2.5" />
+                                      DEMO
+                                    </span>
+                                  )}
+                                  <span className="px-3 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[10px] font-bold">
+                                    {tender.category}
                                   </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[9px] font-bold flex items-center gap-1">
-                                    <Info className="w-2.5 h-2.5" />
-                                    DEMO
+                                  <span className="px-3 py-0.5 rounded-full bg-gray-50 text-gray-600 text-[10px] font-bold flex items-center gap-1">
+                                    <MapPin className="w-3 h-3" />
+                                    {tender.region}
                                   </span>
-                                )}
-                                <span className="px-3 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[10px] font-bold">
-                                  {tender.category}
-                                </span>
-                                <span className="px-3 py-0.5 rounded-full bg-gray-50 text-gray-600 text-[10px] font-bold flex items-center gap-1">
-                                  <MapPin className="w-3 h-3" />
-                                  {tender.region}
-                                </span>
-                                <span className="text-[10px] font-mono text-gray-400 uppercase tracking-tighter">Ref: {tender.reference}</span>
-                              </div>
-                              
-                              <h3 className="text-lg font-bold text-[#1A3A5C] group-hover:text-blue-600 transition-colors leading-snug">
-                                {tender.title}
-                              </h3>
-                              
-                              <div className="flex items-center gap-4 text-sm text-gray-500">
-                                <span className="flex items-center gap-1.5 font-medium">
-                                  <Tag className="w-4 h-4" />
-                                  {tender.organization}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-row md:flex-col justify-between items-end gap-4 min-w-[160px]">
-                              <div className="text-right">
-                                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Estimated Budget</p>
-                                <p className="text-xl font-black text-[#1A3A5C]">{formatCurrency(tender.budget)}</p>
-                              </div>
-                              
-                              <div className="flex items-center gap-2">
-                                <div className="text-right">
-                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Deadline</p>
-                                  <p className={`text-sm font-bold flex items-center gap-1 px-2 py-1 rounded-md ${getUrgencyColor(tender.deadline)}`}>
-                                    <Calendar className="w-3.5 h-3.5" />
-                                    {formatDate(tender.deadline)}
-                                  </p>
+                                  <span className="text-[10px] font-mono text-gray-400 uppercase tracking-tighter">Ref: {tender.reference}</span>
                                 </div>
-                                <button 
-                                  className="p-2 rounded-full hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                                  onClick={() => {
-                                    if (tender.url) {
-                                      window.open(tender.url, '_blank', 'noopener,noreferrer');
-                                    } else {
-                                      alert("Lien non disponible pour cette offre.");
-                                    }
-                                  }}
-                                >
-                                  <ExternalLink className="w-4 h-4" />
-                                </button>
+                                
+                                <h3 className="text-lg font-bold text-[#1A3A5C] group-hover:text-blue-600 transition-colors leading-snug">
+                                  {tender.title}
+                                </h3>
+                                
+                                <div className="flex items-center gap-4 text-sm text-gray-500">
+                                  <span className="flex items-center gap-1.5 font-medium">
+                                    <Tag className="w-4 h-4" />
+                                    {tender.organization}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-row md:flex-col justify-between items-end gap-4 min-w-[180px]">
+                                <div className="text-right">
+                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Estimated Budget</p>
+                                  <p className="text-xl font-black text-[#1A3A5C]">{formatCurrency(tender.budget)}</p>
+                                </div>
+                                
+                                <div className="flex items-center gap-2">
+                                  <div className="text-right">
+                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Deadline</p>
+                                    <p className={`text-sm font-bold flex items-center gap-1 px-2 py-1 rounded-md ${getUrgencyColor(tender.deadline)}`}>
+                                      <Calendar className="w-3.5 h-3.5" />
+                                      {formatDate(tender.deadline)}
+                                    </p>
+                                  </div>
+                                  <button 
+                                    className="p-2 rounded-full hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                                    onClick={() => {
+                                      if (tender.url) {
+                                        window.open(tender.url, '_blank', 'noopener,noreferrer');
+                                      } else {
+                                        alert("Lien non disponible pour cette offre.");
+                                      }
+                                    }}
+                                  >
+                                    <ExternalLink className="w-4 h-4" />
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           </div>
+                        </motion.div>
+                      ))}
+
+                      {totalTenders > pageSize && (
+                        <div className="mt-8 flex justify-center gap-2">
+                          <button 
+                            disabled={page === 1}
+                            onClick={() => setPage(p => p - 1)}
+                            className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm disabled:opacity-50 hover:bg-gray-50 transition-colors"
+                          >
+                            Précédent
+                          </button>
+                          <span className="flex items-center px-4 text-sm font-medium text-gray-600">
+                            Page {page} sur {Math.ceil(totalTenders / pageSize)}
+                          </span>
+                          <button 
+                            disabled={page >= Math.ceil(totalTenders / pageSize)}
+                            onClick={() => setPage(p => p + 1)}
+                            className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm disabled:opacity-50 hover:bg-gray-50 transition-colors"
+                          >
+                            Suivant
+                          </button>
                         </div>
-                      </motion.div>
-                    ))
+                      )}
+                    </>
                   )}
                 </AnimatePresence>
               </div>

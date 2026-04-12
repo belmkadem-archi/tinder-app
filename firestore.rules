@@ -26,15 +26,15 @@ service cloud.firestore {
     // ===============================================================
     
     match /tenders/{tenderId} {
-      // Allow anyone to read tenders for the dashboard
+      // Allow anyone to read and write tenders for the prototype
+      // WARNING: In production, you should restrict write access to the server or authenticated admins.
       allow read: if true;
-      // Only allow authenticated users (or the server) to write
-      allow write: if isAuthenticated();
+      allow write: if true;
     }
 
     match /stats/{statId} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if true;
     }
   }
 }
