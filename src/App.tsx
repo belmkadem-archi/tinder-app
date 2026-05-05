@@ -20,7 +20,8 @@ import {
   Sparkles,
   Info,
   BookOpen,
-  CheckCircle2
+  CheckCircle2,
+  Database
 } from "lucide-react";
 
 interface Tender {
@@ -55,7 +56,9 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [selectedRegion, setSelectedRegion] = useState("All");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [isScraping, setIsScraping] = useState(false);
+  const [autoSync, setAutoSync] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
   const [connectivity, setConnectivity] = useState<{ status: string; code?: number; error?: string } | null>(null);
   const [page, setPage] = useState(1);
@@ -72,35 +75,53 @@ export default function App() {
     }
   };
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const [tendersRes, statsRes, filtersRes] = await Promise.all([
-        fetch(`/api/tenders?page=${page}&size=${pageSize}&search=${search}&category=${selectedCategory === 'All' ? '' : selectedCategory}&region=${selectedRegion === 'All' ? '' : selectedRegion}`),
-        fetch('/api/stats'),
-        fetch('/api/filters')
-      ]);
-      
-      const tendersData = await tendersRes.json();
-      const statsData = await statsRes.json();
-      const filtersData = await filtersRes.json();
+   const fetchData = async () => {
+     try {
+       setLoading(true);
+       setError(null);
+       const [tendersRes, statsRes, filtersRes] = await Promise.all([
+         fetch(`/api/tenders?page=${page}&size=${pageSize}&search=${search}&category=${selectedCategory === 'All' ? '' : selectedCategory}&region=${selectedRegion === 'All' ? '' : selectedRegion}`),
+         fetch('/api/stats'),
+         fetch('/api/filters')
+       ]);
+       
+       const tendersData = await tendersRes.json();
+       const statsData = await statsRes.json();
+       const filtersData = await filtersRes.json();
 
-      if (tendersData && Array.isArray(tendersData.items)) {
-        setTenders(tendersData.items);
-        setTotalTenders(tendersData.total || 0);
-      }
-      if (statsData && !statsData.error) {
-        setStats(statsData);
-      }
-      if (filtersData && Array.isArray(filtersData.categories)) {
-        setFilters(filtersData);
-      }
-    } catch (error) {
-      console.error("Failed to fetch data", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+       if (tendersData?.error) {
+         setError(tendersData.details || tendersData.error);
+       }
+
+       if (tendersData && Array.isArray(tendersData.items)) {
+         setTenders(tendersData.items);
+         setTotalTenders(tendersData.total || 0);
+       }
+       if (statsData && !statsData.error) {
+         setStats(statsData);
+       }
+       if (filtersData && Array.isArray(filtersData.categories)) {
+         setFilters(filtersData);
+       }
+     } catch (error) {
+       console.error("Failed to fetch data", error);
+       const errorMsg = error instanceof Error ? error.message : String(error);
+       setError(errorMsg);
+       
+       // Auto-run diagnostic on failure
+       try {
+         const diagRes = await fetch('/api/db-check');
+         const diagData = await diagRes.json();
+         if (diagData.status === 'error') {
+           setError(`Database Error: ${diagData.error}`);
+         }
+       } catch (diagErr) {
+         console.error("Diagnostic failed", diagErr);
+       }
+     } finally {
+       setLoading(false);
+     }
+   };
 
   useEffect(() => {
     setPage(1);
@@ -112,29 +133,19 @@ export default function App() {
   }, [page]);
 
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'new_tender') {
-          setTenders(prev => Array.isArray(prev) ? [msg.data, ...prev] : [msg.data]);
-          fetch('/api/stats').then(res => res.json()).then(data => {
-            if (data && !data.error) setStats(data);
-          });
-        }
-      } catch (e) {
-        console.error("Failed to parse WS message", e);
-      }
-    };
-
     fetchConnectivity();
     const connInterval = setInterval(fetchConnectivity, 60000);
+    
+    // Refresh stats every 30 seconds
+    const statsInterval = setInterval(() => {
+      fetch('/api/stats').then(res => res.json()).then(data => {
+        if (data && !data.error) setStats(data);
+      });
+    }, 30000);
 
     return () => {
-      ws.close();
       clearInterval(connInterval);
+      clearInterval(statsInterval);
     };
   }, []);
 
@@ -170,6 +181,17 @@ export default function App() {
       fetchData();
     }, 2000);
   };
+
+  useEffect(() => {
+    if (!autoSync) return;
+    
+    const interval = setInterval(() => {
+      console.log("🔄 Auto-syncing...");
+      handleTriggerScrape();
+    }, 15 * 60 * 1000); // Every 15 minutes
+
+    return () => clearInterval(interval);
+  }, [autoSync]);
 
   const formatCurrency = (amount: number | null) => {
     if (!amount) return "N/A";
@@ -228,6 +250,17 @@ export default function App() {
               </div>
             )}
             <button 
+              onClick={() => setAutoSync(!autoSync)}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
+                autoSync 
+                  ? "bg-green-50 text-green-700 border-green-200" 
+                  : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+              }`}
+            >
+              <Zap className={`w-4 h-4 ${autoSync ? "fill-green-500" : ""}`} />
+              <span className="hidden sm:inline">{autoSync ? "Auto-Sync: ON" : "Auto-Sync: OFF"}</span>
+            </button>
+            <button 
               className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#1A3A5C]/20 text-[#1A3A5C] hover:bg-[#1A3A5C]/5 text-sm font-medium transition-all disabled:opacity-50"
               onClick={handleTriggerScrape}
               disabled={isScraping}
@@ -245,6 +278,26 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {error && (
+        <div className="bg-red-600 text-white py-3 px-4 shadow-lg animate-in slide-in-from-top duration-300">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 flex-shrink-0" />
+              <p className="text-sm font-medium">
+                <span className="font-bold">Database Error:</span> {error}
+                <span className="ml-2 opacity-80 hidden md:inline">Please check your Vercel environment variables.</span>
+              </p>
+            </div>
+            <button 
+              onClick={() => fetchData()}
+              className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded text-xs font-bold transition-colors whitespace-nowrap"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {viewMode === 'guide' ? (
@@ -356,6 +409,40 @@ export default function App() {
             <div className="text-center space-y-4">
               <h2 className="text-3xl font-bold text-[#1A3A5C]">Paramètres</h2>
               <p className="text-gray-500">Configurez vos intégrations et préférences</p>
+            </div>
+
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 space-y-6">
+              <div className="flex items-center gap-3 pb-4 border-b">
+                <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
+                  <Database className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg">Diagnostic Base de Données</h3>
+                  <p className="text-xs text-gray-400">Vérifiez la connexion à Firestore sur Vercel</p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <button 
+                  onClick={async () => {
+                    try {
+                      const res = await fetch('/api/db-check');
+                      const data = await res.json();
+                      if (data.status === 'ok') {
+                        alert(`✅ Connexion réussie !\nBase de données : ${data.databaseId}\nDonnées trouvées : ${data.lastScrapeExists ? 'Oui' : 'Non (Lancez un Sync)'}`);
+                      } else {
+                        alert(`❌ Erreur de connexion :\n${data.error}`);
+                      }
+                    } catch (e) {
+                      alert("❌ Erreur lors de l'appel à l'API de diagnostic.");
+                    }
+                  }}
+                  className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold text-sm hover:bg-purple-700 transition-all shadow-lg shadow-purple-900/10 flex items-center justify-center gap-2"
+                >
+                  <Search className="w-4 h-4" />
+                  Tester la connexion Firestore
+                </button>
+              </div>
             </div>
 
             <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 space-y-6">
@@ -517,7 +604,13 @@ export default function App() {
                       <p className="text-gray-400">No tenders match your filters.</p>
                     </div>
                   ) : (
-                    <>
+                    <motion.div 
+                      key="tenders-list"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="space-y-4"
+                    >
                       {processedTenders.map((tender) => (
                         <motion.div
                           key={tender.id}
@@ -617,7 +710,7 @@ export default function App() {
                           </button>
                         </div>
                       )}
-                    </>
+                    </motion.div>
                   )}
                 </AnimatePresence>
               </div>

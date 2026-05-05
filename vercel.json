@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "server.ts",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": ["dist/**", "src/**"]
+      }
     },
     {
       "src": "package.json",
@@ -30,6 +33,12 @@
     {
       "src": "/(.*)",
       "dest": "index.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/scrape/trigger",
+      "schedule": "0 * * * *"
     }
   ]
 }

@@ -2,8 +2,8 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { format, addDays } from 'date-fns';
 import crypto from 'crypto';
-import { adminDbWrapper as adminDb } from '../lib/firebase-admin';
-import { sendTelegramMessage, formatTenderMessage } from './telegram';
+import { adminDbWrapper as adminDb } from '../lib/firebase-admin.js';
+import { sendTelegramMessage, formatTenderMessage } from './telegram.js';
 
 const PMMP_BASE = "https://www.marchespublics.gov.ma/";
 const SEARCH_URL = "https://www.marchespublics.gov.ma/index.php?page=entreprise.EntrepriseAdvancedSearch&AllCons&EnCours&searchAnnounce";
@@ -382,4 +382,38 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
   });
     
   console.log(`✅ Scrape done: ${newCount} new tenders out of ${raw.length} found`);
+  
+  // Cleanup expired tenders
+  await cleanupExpiredTenders();
+}
+
+async function cleanupExpiredTenders() {
+  console.log("🧹 Cleaning up expired tenders...");
+  const tendersRef = adminDb.collection('tenders');
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const nowISO = now.toISOString();
+
+  try {
+    const snapshot = await tendersRef.get();
+    let deletedCount = 0;
+    const batch = adminDb.batch();
+
+    snapshot.docs.forEach((doc: any) => {
+      const data = doc.data();
+      if (data.deadline && data.deadline < nowISO) {
+        batch.delete(doc.ref);
+        deletedCount++;
+      }
+    });
+
+    if (deletedCount > 0) {
+      await batch.commit();
+      console.log(`🗑️ Deleted ${deletedCount} expired tenders`);
+    } else {
+      console.log("✨ No expired tenders found");
+    }
+  } catch (e) {
+    console.error("❌ Cleanup failed:", e);
+  }
 }

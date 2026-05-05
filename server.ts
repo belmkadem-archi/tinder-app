@@ -2,38 +2,60 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
-import { WebSocketServer, WebSocket } from "ws";
-import cron from "node-cron";
 import fs from "fs";
-import { adminDbWrapper as adminDb } from "./src/lib/firebase-admin";
-import { scrapeAndNotify, checkConnectivity } from "./src/services/scraper";
+import { adminDbWrapper as adminDb, adminDb as firestore } from "./src/lib/firebase-admin.js";
+import { scrapeAndNotify, checkConnectivity } from "./src/services/scraper.js";
+import { collection, query, where, orderBy, getDocs, limit } from "firebase/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
-  const wss = new WebSocketServer({ noServer: true });
+const app = express();
+const PORT = 3000;
 
-  app.use(cors());
-  app.use(express.json());
+app.use(cors());
+app.use(express.json());
 
-  // Health check for platform
-  app.get("/health", (req, res) => {
-    res.send("OK");
+// Log environment variables (keys only for security)
+console.log("🔑 Available Env Vars:", Object.keys(process.env).filter(k => 
+  k.includes('FIREBASE') || k.includes('TELEGRAM') || k.includes('VITE')
+).join(', '));
+
+// Health check for platform
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// API Routes
+app.get("/api/config", (req, res) => {
+  res.json({
+    apiKey: process.env.FIREBASE_API_KEY || "",
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN || "",
+    projectId: process.env.FIREBASE_PROJECT_ID || "",
+    appId: process.env.FIREBASE_APP_ID || "",
+    firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "(default)"
+  });
+});
+
+app.get("/api/db-check", async (req, res) => {
+    try {
+      const testDoc = await adminDb.collection('stats').doc('last_scrape').get();
+      res.json({ 
+        status: "ok", 
+        connected: true, 
+        databaseId: adminDb.databaseId || "(default)",
+        lastScrapeExists: testDoc.exists 
+      });
+    } catch (error) {
+      console.error("❌ Database Check Failed:", error);
+      res.status(500).json({ 
+        status: "error", 
+        connected: false, 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+    }
   });
 
-  const broadcast = (data: any) => {
-    const msg = JSON.stringify(data);
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(msg);
-      }
-    });
-  };
-
-  // API Routes
   app.get("/api/connectivity", async (req, res) => {
     const result = await checkConnectivity();
     res.json(result);
@@ -43,23 +65,61 @@ async function startServer() {
     const { page = 1, size = 20, category, region, search } = req.query;
     
     try {
-      let query: any = adminDb.collection('tenders');
+      const tendersRef = collection(firestore, 'tenders');
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      const nowISO = now.toISOString();
 
-      if (category) query = query.where('category', '==', category);
-      if (region) query = query.where('region', '==', region);
+      let constraints = [
+        where('deadline', '>=', nowISO),
+        orderBy('deadline', 'asc'), // Primary sort for the range filter
+        orderBy('published_at', 'desc') // Secondary sort for "newest first"
+      ];
+
+      // Note: Chaining multiple orderBys with range filters on different fields 
+      // usually requires a composite index in Firestore.
+      // If we want "newest first" as the primary sort, we'd need:
+      // orderBy('published_at', 'desc')
+      // but that works best if we don't have range filter on another field or have index.
       
-      // Firestore doesn't support native LIKE search easily without extensions
-      // For now, we'll fetch and filter if search is present, or just return all
-      const snapshot = await query.orderBy('deadline', 'asc').get();
+      // Let's stick to getting them all and sorting/filtering in memory if index is not ready,
+      // OR better, simplify the query.
+      
+      const snapshot = await getDocs(tendersRef);
       let items = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
 
+      // Filter by deadline (expired)
+      items = items.filter(item => {
+        const deadline = new Date(item.deadline);
+        return deadline >= now;
+      });
+
+      // Filter by category
+      if (category && category !== 'All') {
+        items = items.filter(item => item.category === category);
+      }
+
+      // Filter by region
+      if (region && region !== 'All') {
+        items = items.filter(item => item.region === region);
+      }
+
+      // Filter by search
       if (search) {
         const searchLower = String(search).toLowerCase();
         items = items.filter((item: any) => 
           item.title.toLowerCase().includes(searchLower) || 
-          item.organization.toLowerCase().includes(searchLower)
+          item.organization.toLowerCase().includes(searchLower) ||
+          item.reference?.toLowerCase().includes(searchLower)
         );
       }
+
+      // Sort by published_at DESC (Newest first)
+      items.sort((a, b) => {
+        const dateA = new Date(a.published_at || a.deadline).getTime();
+        const dateB = new Date(b.published_at || b.deadline).getTime();
+        return dateB - dateA;
+      });
 
       const total = items.length;
       const offset = (Number(page) - 1) * Number(size);
@@ -67,7 +127,11 @@ async function startServer() {
 
       res.json({ total, page: Number(page), size: Number(size), items: paginatedItems });
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      console.error("❌ Firestore Error (tenders):", error);
+      res.status(500).json({ 
+        error: "Failed to fetch tenders from database", 
+        details: error instanceof Error ? error.message : String(error) 
+      });
     }
   });
 
@@ -76,8 +140,8 @@ async function startServer() {
       const tendersSnapshot = await adminDb.collection('tenders').get();
       const items = tendersSnapshot.docs.map((doc: any) => doc.data());
       
-      const lastScrapeSnapshot = await adminDb.collection('stats').doc('last_scrape').get();
-      const lastScrape = !lastScrapeSnapshot.empty ? lastScrapeSnapshot.docs[0].data() : null;
+      const lastScrapeDoc = await adminDb.collection('stats').doc('last_scrape').get();
+      const lastScrape = lastScrapeDoc.exists ? lastScrapeDoc.data() : null;
 
       const categories: any = {};
       const regions: any = {};
@@ -101,7 +165,11 @@ async function startServer() {
         last_scrape: lastScrape
       });
     } catch (error) {
-      res.status(500).json({ error: String(error) });
+      console.error("❌ Firestore Error (stats):", error);
+      res.status(500).json({ 
+        error: "Failed to fetch statistics", 
+        details: error instanceof Error ? error.message : String(error) 
+      });
     }
   });
 
@@ -119,14 +187,29 @@ async function startServer() {
     }
   });
 
-  app.post("/api/scrape/trigger", async (req, res) => {
+  app.all("/api/scrape/trigger", async (req, res) => {
     try {
-      console.log("🚀 Manual scrape triggered via API");
-      await scrapeAndNotify(broadcast, true); // Await and use quick mode for Vercel
-      res.json({ message: "Scraping completed successfully" });
+      console.log("🚀 Scrape triggered (Manual or Cron)");
+      
+      // On Vercel, we can't easily run long background tasks.
+      // We'll run a very quick scrape and return.
+      // For a full scrape, the user should use the "Auto-Sync" feature in the UI
+      // which runs the scraper in their browser context (via API calls).
+      
+      const broadcast = (msg: any) => console.log("📢 Broadcast:", msg.type);
+      
+      // We'll try to run it, but we won't await it to avoid timeout if possible,
+      // though Vercel will likely kill it.
+      scrapeAndNotify(broadcast, true).catch(err => {
+        console.error("❌ Background scrape failed:", err);
+      });
+
+      res.json({ message: "Scraping started" });
     } catch (error) {
-      console.error("❌ Manual scrape failed:", error);
-      res.status(500).json({ error: String(error) });
+      console.error("❌ Scrape trigger failed:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: String(error) });
+      }
     }
   });
 
@@ -143,66 +226,53 @@ async function startServer() {
     }
   });
 
-  app.post("/api/telegram/test", async (req, res) => {
-    try {
-      const { sendTelegramMessage } = await import("./src/services/telegram");
-      await sendTelegramMessage("🔔 <b>Test de Notification</b>\n\nCeci est un message de test pour confirmer que votre bot Telegram est correctement configuré.");
-      res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ success: false, error: error instanceof Error ? error.message : String(error) });
-    }
+// Vite middleware for development
+const distPath = path.resolve(__dirname, 'dist');
+const isProduction = fs.existsSync(distPath);
+
+console.log(`🌍 Environment: ${process.env.NODE_ENV}`);
+console.log(`📁 Dist path: ${distPath} (Exists: ${isProduction})`);
+
+if (!isProduction) {
+  console.log("🛠️ Starting in Development mode (Vite)");
+  const { createServer: createViteServer } = await import("vite");
+  const vite = await createViteServer({
+    server: { middlewareMode: true },
+    appType: "spa",
   });
-
-  // Scheduled Jobs
-  cron.schedule("*/30 * * * *", () => {
-    scrapeAndNotify(broadcast);
-  });
-
-  cron.schedule("0 * * * *", async () => {
-    const now = new Date().toISOString();
-    const snapshot = await adminDb.collection('tenders').where('deadline', '<', now).get();
-    const batch = adminDb.batch();
-    snapshot.docs.forEach(doc => batch.delete(doc.ref));
-    await batch.commit();
-    console.log(`🧹 Hourly cleanup: Removed ${snapshot.size} expired tenders`);
-  });
-
-  // Vite middleware for development
-  const distPath = path.resolve(__dirname, 'dist');
-  const isProduction = process.env.NODE_ENV === "production" || fs.existsSync(distPath);
-
-  if (!isProduction) {
-    console.log("🛠️ Starting in Development mode (Vite)");
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    console.log("🚀 Starting in Production mode (Static)");
-    console.log(`📂 Serving static files from: ${distPath}`);
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      const indexPath = path.join(distPath, 'index.html');
-      if (fs.existsSync(indexPath)) {
+  app.use(vite.middlewares);
+} else {
+  console.log("🚀 Starting in Production mode (Static)");
+  app.use(express.static(distPath));
+  app.get('*', (req, res) => {
+    const indexPath = path.join(distPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      try {
+        let html = fs.readFileSync(indexPath, 'utf8');
+        const config = {
+          apiKey: process.env.FIREBASE_API_KEY || "",
+          authDomain: process.env.FIREBASE_AUTH_DOMAIN || "",
+          projectId: process.env.FIREBASE_PROJECT_ID || "",
+          appId: process.env.FIREBASE_APP_ID || "",
+          firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "(default)"
+        };
+        // Inject config into HTML
+        html = html.replace('<head>', `<head><script>window.FIREBASE_CONFIG = ${JSON.stringify(config)};</script>`);
+        res.send(html);
+      } catch (e) {
+        console.error("❌ Error injecting config:", e);
         res.sendFile(indexPath);
-      } else {
-        res.status(404).send("Frontend build not found. Please run 'npm run build'.");
       }
-    });
-  }
-
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  });
-
-  server.on('upgrade', (request, socket, head) => {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
+    } else {
+      res.status(404).send("Frontend build not found.");
+    }
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+  });
+}
+
+export default app;
