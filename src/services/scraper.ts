@@ -151,24 +151,24 @@ async function scrapeUrl(
       seenRefs.add(reference);
 
       let title = "";
-      $(el).find('.objet-line').each((_j, obj) => {
-        const text = $(obj).text().replace(/\s+/g, ' ').trim();
-        if (text.toLowerCase().includes("objet :")) {
-          title = text.split(/objet\s*:/i)[1]?.trim() || "";
-        }
-      });
-
       let organization = "";
       $(el).find('.objet-line').each((_j, obj) => {
+        // Replace <br> tags with space so date/text don't concatenate
+        $(obj).find('br').replaceWith(' ');
         const text = $(obj).text().replace(/\s+/g, ' ').trim();
-        if (text.toLowerCase().includes("acheteur public :")) {
+        if (!title && /objet\s*:/i.test(text)) {
+          title = text.split(/objet\s*:/i)[1]?.replace(/\.\.\..*/s, '').trim() || "";
+        }
+        if (!organization && /acheteur\s+public\s*:/i.test(text)) {
           organization = text.split(/acheteur\s+public\s*:/i)[1]?.trim() || "";
         }
       });
 
-      const deadlineRaw = $(el).find('.cloture-line').text().replace(/\s+/g, ' ').trim();
-      const region = $(el).find('[id*="panelBlocLieuxExec"]').text().trim() || "National";
-      const category = $(el).find('[id*="panelBlocCategorie"]').text().trim() || "Non spécifié";
+      // Replace <br> before reading deadline so date and time don't fuse together
+      $(el).find('.cloture-line br').replaceWith(' ');
+      const deadlineRaw = $(el).find('.cloture-line').first().text().replace(/\s+/g, ' ').trim();
+      const region = $(el).find('[id*="panelBlocLieuxExec"]').text().replace(/\s+/g, ' ').trim().split(' ')[0] || "National";
+      const category = $(el).find('[id*="panelBlocCategorie"]').text().replace(/\s+/g, ' ').trim() || "Non spécifié";
 
       // Build detail page URL
       const refCons = $(el).find('input[id*="_refCons"]').val() as string;
@@ -186,9 +186,13 @@ async function scrapeUrl(
 
       if (!title || !reference) continue;
 
-      console.log(`📄 Fetching budget for: ${reference}`);
-      const budget = await scrapeTenderDetails(detailUrl, cookies);
-      await new Promise(r => setTimeout(r, 300));
+      // Quick mode: skip per-tender budget HTTP requests (too slow for Vercel timeout)
+      let budget: number | null = null;
+      if (!isQuick) {
+        console.log(`📄 Fetching budget for: ${reference}`);
+        budget = await scrapeTenderDetails(detailUrl, cookies);
+        await new Promise(r => setTimeout(r, 300));
+      }
 
       tenders.push({
         title,

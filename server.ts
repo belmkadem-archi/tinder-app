@@ -237,6 +237,10 @@ if (!process.env.VERCEL) {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server → http://localhost:${PORT}`);
+    // Run an initial quick scrape on startup so Firestore is populated immediately
+    console.log("🔍 Running startup scrape...");
+    const broadcast = (msg: any) => console.log("📢 Startup:", msg.type);
+    scrapeAndNotify(broadcast, true).catch(err => console.error("❌ Startup scrape failed:", err));
   });
 }
 
