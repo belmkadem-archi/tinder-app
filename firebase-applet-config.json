@@ -1,10 +1,10 @@
 {
-  "projectId": "ace-slice-490203-u1",
-  "appId": "1:995051012371:web:b0e388378fb4efd40b5ae6",
   "apiKey": "AIzaSyDmBOKDFLI36Gzk0A8eY6_gkBRMQuIwXGs",
   "authDomain": "ace-slice-490203-u1.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-51d94d8a-ef8e-4e42-8927-072c80d1c0ba",
+  "projectId": "ace-slice-490203-u1",
   "storageBucket": "ace-slice-490203-u1.firebasestorage.app",
   "messagingSenderId": "995051012371",
+  "appId": "1:995051012371:web:b0e388378fb4efd40b5ae6",
+  "firestoreDatabaseId": "ai-studio-51d94d8a-ef8e-4e42-8927-072c80d1c0ba",
   "measurementId": ""
 }
