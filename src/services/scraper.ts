@@ -10,13 +10,14 @@ const SEARCH_URL = "https://www.marchespublics.gov.ma/index.php?page=entreprise.
 
 const HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
   "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
   "Cache-Control": "no-cache",
   "Pragma": "no-cache"
 };
 
-const TENDER_TEMPLATES = [
+// Fallback demo data when the portal is unreachable
+const TENDER_TEMPLATES: [string, string, number][] = [
   ["Construction d'un centre de santé", "Travaux", 3500000],
   ["Fourniture de matériel informatique", "Informatique", 850000],
   ["Étude d'impact environnemental", "Études", 420000],
@@ -40,6 +41,12 @@ const REGIONS = [
   "Fès-Meknès", "Tanger-Tétouan-Al Hoceïma", "Souss-Massa"
 ];
 
+const SECTORS = [
+  "1.12", "1.13", "1.15", "1.17", "2.11", "3.13",
+  "1.11", "1.14", "1.16", "2.12", "2.13", "3.11", "3.12",
+  "1.18", "1.19", "2.14", "2.15", "3.14", "3.15"
+];
+
 export async function checkConnectivity() {
   try {
     const res = await axios.get(PMMP_BASE, { headers: HEADERS, timeout: 8000, validateStatus: () => true });
@@ -49,260 +56,165 @@ export async function checkConnectivity() {
   }
 }
 
-const SECTORS = [
-  "1.12", "1.13", "1.15", "1.17", "2.11", "3.13", 
-  "1.11", "1.14", "1.16", "2.12", "2.13", "3.11", "3.12",
-  "1.18", "1.19", "2.14", "2.15", "3.14", "3.15"
-];
-
-export async function scrapePmmp(isQuick: boolean = false) {
-  const tenders: any[] = [];
-  const seenRefs = new Set<string>();
-  
-  try {
-    await getCookies();
-    console.log("🕵️ Starting PMMP scrape...");
-    // Always scrape the main search page
-    let currentUrl: string | null = SEARCH_URL;
-    let pagesProcessed = 0;
-    const maxPages = isQuick ? 8 : 20; // Even more pages
-
-    while (currentUrl && pagesProcessed < maxPages) {
-      const nextUrl: string | null = await scrapeUrl(currentUrl, tenders, seenRefs, isQuick);
-      currentUrl = nextUrl;
-      pagesProcessed++;
-      if (currentUrl) await new Promise(resolve => setTimeout(resolve, 800));
-    }
-    
-    // Scrape more sectors
-    const sectorsToScrape = isQuick ? SECTORS.slice(0, 12) : SECTORS;
-    
-    for (const sector of sectorsToScrape) {
-      const sectorUrl = `${SEARCH_URL}&domaineActivite=${sector}`;
-      await scrapeUrl(sectorUrl, tenders, seenRefs, isQuick);
-      // Small delay to be polite
-      await new Promise(resolve => setTimeout(resolve, 400));
-    }
-  } catch (e) {
-    console.warn("Error during scrape loop:", e);
-  }
-
-  if (tenders.length > 0) {
-    console.log(`✨ Scraped ${tenders.length} live tenders`);
-    return tenders;
-  }
-
-  console.warn("⚠️ Using synthetic data fallback");
-  
-  const newTenders = [];
-  for (let i = 0; i < 8; i++) {
-    const template = TENDER_TEMPLATES[Math.floor(Math.random() * TENDER_TEMPLATES.length)];
-    const org = ORGANIZATIONS[Math.floor(Math.random() * ORGANIZATIONS.length)];
-    const region = REGIONS[Math.floor(Math.random() * REGIONS.length)];
-    const daysAhead = Math.floor(Math.random() * 35) + 10;
-    const deadline = format(addDays(new Date(), daysAhead), "dd/MM/yyyy");
-    const budget = Math.floor((template[2] as number) * (0.85 + Math.random() * 0.4));
-    const uid = crypto.createHash('md5').update(`${template[0]}${org}${deadline}`).digest('hex').substring(0, 8).toUpperCase();
-    
-    newTenders.push({
-      title: template[0],
-      organization: org,
-      category: template[1],
-      region: region,
-      deadline: deadline,
-      budget: budget,
-      reference: `DEMO-${uid}`,
-      url: "https://www.marchespublics.gov.ma/pmmp/",
-      is_live: false
-    });
-  }
-
-  return newTenders;
-}
-
-async function scrapeTenderDetails(url: string) {
-  try {
-    const response = await axios.get(url, { 
-      headers: { 
-        ...HEADERS, 
-        "Referer": SEARCH_URL,
-        "Cookie": cookies.join('; ')
-      }, 
-      timeout: 12000 
-    });
-    
-    if (response.status === 200) {
-      const html = response.data;
-      if (!html.toLowerCase().includes("estimation")) {
-        console.warn(`⚠️ Detail page for ${url} does not contain 'Estimation' text.`);
-        return null;
-      }
-
-      const $ = cheerio.load(html);
-      let budget: number | null = null;
-      
-      // PMMP detail pages often use a table or a list of divs
-      $('tr, div, p, td, th').each((i, el) => {
-        const text = $(el).text().trim();
-        if (text.toLowerCase().includes("estimation") && text.toLowerCase().includes("dhs")) {
-          // Look for patterns like "5 674 424,40" or "19304512"
-          const matches = text.match(/[\d\s\u00A0]+[.,]\d{2}/g) || text.match(/\d[\d\s\u00A0]+\d/g);
-          if (matches) {
-            for (const match of matches) {
-              const cleaned = match.replace(/[\s\u00A0]/g, '').replace(',', '.');
-              const num = parseFloat(cleaned);
-              if (!isNaN(num) && num > 1000) {
-                budget = num;
-                return false;
-              }
-            }
-          }
-
-          // Check siblings
-          let siblingText = $(el).next().text().trim();
-          if (!siblingText || siblingText.length < 2) {
-            siblingText = $(el).closest('tr').find('td').last().text().trim();
-          }
-
-          if (siblingText) {
-            const cleaned = siblingText.replace(/[\s\u00A0]/g, '').replace(',', '.').replace(/[^\d.]/g, '');
-            const num = parseFloat(cleaned);
-            if (!isNaN(num) && num > 1000) {
-              budget = num;
-              return false;
-            }
-          }
-        }
-      });
-
-      if (budget) {
-        console.log(`✅ Extracted budget: ${budget} for ${url}`);
-      } else {
-        console.warn(`❓ Could not extract budget from detail page: ${url}`);
-      }
-
-      return budget;
-    } else {
-      console.warn(`⚠️ Detail page returned status ${response.status} for ${url}`);
-    }
-  } catch (e) {
-    console.warn(`⚠️ Failed to fetch details for ${url}:`, e instanceof Error ? e.message : String(e));
-  }
-  return null;
-}
-
-let cookies: string[] = [];
-
-async function getCookies() {
+// Obtain session cookies from the portal homepage
+async function getSessionCookies(): Promise<string[]> {
   try {
     const res = await axios.get(PMMP_BASE, { headers: HEADERS, timeout: 8000 });
-    if (res.headers['set-cookie']) {
-      cookies = res.headers['set-cookie'];
-      console.log("🍪 Cookies obtained");
+    const setCookie = res.headers['set-cookie'];
+    if (setCookie && setCookie.length > 0) {
+      console.log(`🍪 Session cookies obtained (${setCookie.length})`);
+      return setCookie;
     }
   } catch (e) {
-    console.warn("⚠️ Failed to get cookies:", e instanceof Error ? e.message : String(e));
+    console.warn("⚠️ Failed to obtain session cookies:", e instanceof Error ? e.message : String(e));
+  }
+  return [];
+}
+
+function buildRequestHeaders(cookies: string[]) {
+  return {
+    ...HEADERS,
+    ...(cookies.length > 0 ? { "Cookie": cookies.map(c => c.split(';')[0]).join('; ') } : {})
+  };
+}
+
+async function scrapeTenderDetails(url: string, cookies: string[]): Promise<number | null> {
+  try {
+    const response = await axios.get(url, {
+      headers: { ...buildRequestHeaders(cookies), "Referer": SEARCH_URL },
+      timeout: 12000
+    });
+
+    if (response.status !== 200) return null;
+
+    const html = response.data as string;
+    if (!html.toLowerCase().includes("estimation")) return null;
+
+    const $ = cheerio.load(html);
+    let budget: number | null = null;
+
+    $('tr, div, p, td, th').each((_i, el) => {
+      const text = $(el).text().trim();
+      if (text.toLowerCase().includes("estimation") && text.toLowerCase().includes("dhs")) {
+        const matches = text.match(/[\d\s ]+[.,]\d{2}/g) || text.match(/\d[\d\s ]+\d/g);
+        if (matches) {
+          for (const match of matches) {
+            const num = parseFloat(match.replace(/[\s ]/g, '').replace(',', '.'));
+            if (!isNaN(num) && num > 1000) { budget = num; return false; }
+          }
+        }
+        // Try sibling or last cell
+        const sibling = $(el).next().text().trim() || $(el).closest('tr').find('td').last().text().trim();
+        if (sibling) {
+          const num = parseFloat(sibling.replace(/[\s ]/g, '').replace(',', '.').replace(/[^\d.]/g, ''));
+          if (!isNaN(num) && num > 1000) { budget = num; return false; }
+        }
+      }
+    });
+
+    return budget;
+  } catch (e) {
+    console.warn(`⚠️ Detail fetch failed for ${url}:`, e instanceof Error ? e.message : String(e));
+    return null;
   }
 }
 
-async function scrapeUrl(url: string, tenders: any[], seenRefs: Set<string>, isQuick: boolean): Promise<string | null> {
+async function scrapeUrl(
+  url: string,
+  tenders: any[],
+  seenRefs: Set<string>,
+  cookies: string[],
+  isQuick: boolean
+): Promise<string | null> {
   try {
     console.log(`🌐 Scraping: ${url}`);
     const response = await axios.get(url, {
-      headers: { 
-        ...HEADERS, 
-        "Cookie": cookies.join('; ')
-      },
+      headers: buildRequestHeaders(cookies),
       timeout: 25000,
       validateStatus: () => true
     });
 
-    if (response.status === 200) {
-      const $ = cheerio.load(response.data);
-      
-      const rows = $('.table-results tr').get();
-      
-      for (const el of rows) {
-        const cells = $(el).find('td');
-        if (cells.length >= 5) {
-          const reference = $(el).find('.ref').text().trim();
-          if (!reference || seenRefs.has(reference)) continue;
-          seenRefs.add(reference);
+    if (response.status !== 200) {
+      console.warn(`⚠️ HTTP ${response.status} for ${url}`);
+      return null;
+    }
 
-          // Extract Objet
-          let title = "";
-          $(el).find('.objet-line').each((j, obj) => {
-            const text = $(obj).text().replace(/\s+/g, ' ').trim();
-            if (text.toLowerCase().includes("objet :")) {
-              title = text.split(/objet\s*:/i)[1]?.trim() || "";
-            }
-          });
+    const $ = cheerio.load(response.data);
+    const rows = $('.table-results tr').get();
 
-          // Extract Organization
-          let organization = "";
-          $(el).find('.objet-line').each((j, obj) => {
-            const text = $(obj).text().replace(/\s+/g, ' ').trim();
-            if (text.toLowerCase().includes("acheteur public :")) {
-              organization = text.split(/acheteur\s+public\s*:/i)[1]?.trim() || "";
-            }
-          });
+    for (const el of rows) {
+      const cells = $(el).find('td');
+      if (cells.length < 5) continue;
 
-          // Extract Deadline
-          const deadlineRaw = $(el).find('.cloture-line').text().trim();
-          const deadline = deadlineRaw.replace(/\s+/g, ' ').trim();
+      const reference = $(el).find('.ref').text().trim();
+      if (!reference || seenRefs.has(reference)) continue;
+      seenRefs.add(reference);
 
-          // Extract Region
-          const region = $(el).find('[id*="panelBlocLieuxExec"]').text().trim() || "National";
+      let title = "";
+      $(el).find('.objet-line').each((_j, obj) => {
+        const text = $(obj).text().replace(/\s+/g, ' ').trim();
+        if (text.toLowerCase().includes("objet :")) {
+          title = text.split(/objet\s*:/i)[1]?.trim() || "";
+        }
+      });
 
-          // Extract URL and IDs
-          const refCons = $(el).find('input[id*="_refCons"]').val() as string;
-          const orgCons = $(el).find('input[id*="_orgCons"]').val() as string;
-          
-          let fullUrl = SEARCH_URL;
-          if (refCons && orgCons) {
-            fullUrl = `${PMMP_BASE}index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=${refCons}&orgAcronyme=${orgCons}`;
-          } else {
-            const detailLink = $(el).find('a[href*="EntrepriseDetailConsultation"]').attr('href');
-            if (detailLink) {
-              const link = detailLink.startsWith('?') ? 'index.php' + detailLink : detailLink;
-              fullUrl = `${PMMP_BASE}${link}`.replace('EntrepriseDetailConsultation', 'EntrepriseDetailsConsultation');
-            }
-          }
+      let organization = "";
+      $(el).find('.objet-line').each((_j, obj) => {
+        const text = $(obj).text().replace(/\s+/g, ' ').trim();
+        if (text.toLowerCase().includes("acheteur public :")) {
+          organization = text.split(/acheteur\s+public\s*:/i)[1]?.trim() || "";
+        }
+      });
 
-          // Extract Category
-          const category = $(el).find('[id*="panelBlocCategorie"]').text().trim() || "Non spécifié";
+      const deadlineRaw = $(el).find('.cloture-line').text().replace(/\s+/g, ' ').trim();
+      const region = $(el).find('[id*="panelBlocLieuxExec"]').text().trim() || "National";
+      const category = $(el).find('[id*="panelBlocCategorie"]').text().trim() || "Non spécifié";
 
-          if (title && reference) {
-            // Fetch budget from detail page
-            console.log(`📄 Fetching details for: ${reference}`);
-            const budget = await scrapeTenderDetails(fullUrl);
-            // Small delay between detail requests to be safe
-            await new Promise(resolve => setTimeout(resolve, 300));
-
-            tenders.push({
-              title,
-              organization: organization || "Organisme Public",
-              deadline: deadline.split(' ')[0], // Just the date part
-              category,
-              region: region.split('\n')[0].trim(),
-              budget,
-              reference,
-              url: fullUrl,
-              is_live: true
-            });
-          }
+      // Build detail page URL
+      const refCons = $(el).find('input[id*="_refCons"]').val() as string;
+      const orgCons = $(el).find('input[id*="_orgCons"]').val() as string;
+      let detailUrl = SEARCH_URL;
+      if (refCons && orgCons) {
+        detailUrl = `${PMMP_BASE}index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=${refCons}&orgAcronyme=${orgCons}`;
+      } else {
+        const href = $(el).find('a[href*="EntrepriseDetailConsultation"]').attr('href');
+        if (href) {
+          const link = href.startsWith('?') ? 'index.php' + href : href;
+          detailUrl = `${PMMP_BASE}${link}`.replace('EntrepriseDetailConsultation', 'EntrepriseDetailsConsultation');
         }
       }
 
-      // Find next page link
-      const nextLink = $('.pagination a, a[title*="Suivant"], a:contains(">")').filter((i, el) => {
+      if (!title || !reference) continue;
+
+      console.log(`📄 Fetching budget for: ${reference}`);
+      const budget = await scrapeTenderDetails(detailUrl, cookies);
+      await new Promise(r => setTimeout(r, 300));
+
+      tenders.push({
+        title,
+        organization: organization || "Organisme Public",
+        deadline: deadlineRaw.split(' ')[0],
+        category,
+        region: region.split('\n')[0].trim(),
+        budget,
+        reference,
+        url: detailUrl,
+        is_live: true
+      });
+    }
+
+    // Find next page
+    const nextLink = $('.pagination a, a[title*="Suivant"], a:contains(">")')
+      .filter((_i, el) => {
         const t = $(el).text().toLowerCase() + ($(el).attr('title') || '').toLowerCase();
         return t.includes('>') || t.includes('suivant');
-      }).first().attr('href');
-      
-      if (nextLink && nextLink !== "#") {
-        return nextLink.startsWith('http') ? nextLink : `${PMMP_BASE}${nextLink.startsWith('/') ? nextLink.substring(1) : nextLink}`;
-      }
+      })
+      .first().attr('href');
+
+    if (nextLink && nextLink !== "#") {
+      return nextLink.startsWith('http')
+        ? nextLink
+        : `${PMMP_BASE}${nextLink.startsWith('/') ? nextLink.substring(1) : nextLink}`;
     }
   } catch (e) {
     console.warn(`❌ Scrape failed for ${url}:`, e instanceof Error ? e.message : String(e));
@@ -310,8 +222,76 @@ async function scrapeUrl(url: string, tenders: any[], seenRefs: Set<string>, isQ
   return null;
 }
 
+export async function scrapePmmp(isQuick: boolean = false): Promise<any[]> {
+  const tenders: any[] = [];
+  const seenRefs = new Set<string>();
+
+  // Authenticate: get session cookies from portal homepage
+  const cookies = await getSessionCookies();
+
+  try {
+    console.log("🕵️ Starting PMMP scrape...");
+    let currentUrl: string | null = SEARCH_URL;
+    let pagesProcessed = 0;
+    const maxPages = isQuick ? 8 : 20;
+
+    while (currentUrl && pagesProcessed < maxPages) {
+      currentUrl = await scrapeUrl(currentUrl, tenders, seenRefs, cookies, isQuick);
+      pagesProcessed++;
+      if (currentUrl) await new Promise(r => setTimeout(r, 800));
+    }
+
+    const sectorsToScrape = isQuick ? SECTORS.slice(0, 12) : SECTORS;
+    for (const sector of sectorsToScrape) {
+      await scrapeUrl(`${SEARCH_URL}&domaineActivite=${sector}`, tenders, seenRefs, cookies, isQuick);
+      await new Promise(r => setTimeout(r, 400));
+    }
+  } catch (e) {
+    console.warn("⚠️ Scrape loop error:", e);
+  }
+
+  if (tenders.length > 0) {
+    console.log(`✨ Live tenders scraped: ${tenders.length}`);
+    return tenders;
+  }
+
+  // Demo fallback when portal is unreachable
+  console.warn("⚠️ Portal unreachable — using demo data");
+  const demo: any[] = [];
+  for (let i = 0; i < 8; i++) {
+    const tpl = TENDER_TEMPLATES[Math.floor(Math.random() * TENDER_TEMPLATES.length)];
+    const org = ORGANIZATIONS[Math.floor(Math.random() * ORGANIZATIONS.length)];
+    const region = REGIONS[Math.floor(Math.random() * REGIONS.length)];
+    const deadline = format(addDays(new Date(), Math.floor(Math.random() * 35) + 10), "dd/MM/yyyy");
+    const budget = Math.floor(tpl[2] * (0.85 + Math.random() * 0.4));
+    const uid = crypto.createHash('md5').update(`${tpl[0]}${org}${deadline}`).digest('hex').substring(0, 8).toUpperCase();
+    demo.push({
+      title: tpl[0], organization: org, category: tpl[1],
+      region, deadline, budget,
+      reference: `DEMO-${uid}`,
+      url: "https://www.marchespublics.gov.ma/pmmp/",
+      is_live: false
+    });
+  }
+  return demo;
+}
+
+function parseDeadline(raw: string): Date {
+  try {
+    const parts = raw.split('/');
+    if (parts.length === 3) {
+      const year = parseInt(parts[2].substring(0, 4));
+      const month = parseInt(parts[1]) - 1;
+      const day = parseInt(parts[0]);
+      const d = new Date(year, month, day);
+      if (!isNaN(d.getTime())) return d;
+    }
+  } catch {}
+  return addDays(new Date(), 30);
+}
+
 export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: boolean = false) {
-  console.log(`🔍 Scraping PMMP... [${format(new Date(), 'HH:mm:ss')}] (Quick: ${isQuick})`);
+  console.log(`🔍 Scraping PMMP... [${format(new Date(), 'HH:mm:ss')}] (quick=${isQuick})`);
   const raw = await scrapePmmp(isQuick);
   let newCount = 0;
 
@@ -319,25 +299,14 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
   console.log(`📦 Processing ${raw.length} tenders...`);
 
   for (const item of raw) {
-    // Check if exists in Firestore
+    const deadlineDate = parseDeadline(item.deadline);
+
+    // Skip already-expired live tenders
+    if (deadlineDate < new Date() && item.is_live) continue;
+
     const snapshot = await tendersRef.where('reference', '==', item.reference).limit(1).get();
     const existingDoc = snapshot.empty ? null : snapshot.docs[0];
     const existingData = existingDoc ? existingDoc.data() : null;
-    
-    let deadlineDate: Date;
-    try {
-      const parts = item.deadline.split('/');
-      const yearPart = parts[2].substring(0, 4);
-      deadlineDate = new Date(parseInt(yearPart), parseInt(parts[1]) - 1, parseInt(parts[0]));
-      
-      if (isNaN(deadlineDate.getTime())) {
-        throw new Error("Invalid date");
-      }
-    } catch (e) {
-      deadlineDate = addDays(new Date(), 30);
-    }
-
-    if (deadlineDate < new Date() && item.is_live) continue;
 
     const tenderData = {
       title: item.title,
@@ -345,11 +314,11 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
       category: item.category || "Non spécifié",
       region: item.region || "National",
       deadline: deadlineDate.toISOString(),
-      budget: item.budget,
+      budget: item.budget ?? null,
       url: item.url,
-      is_live: item.is_live ? 1 : 0,
+      is_live: item.is_live === true,
       reference: item.reference,
-      published_at: existingData ? existingData.published_at : new Date().toISOString()
+      published_at: existingData?.published_at ?? new Date().toISOString()
     };
 
     if (existingDoc) {
@@ -358,20 +327,13 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
       const newDoc = await tendersRef.add(tenderData);
       newCount++;
 
-      // Send Telegram notification
-      const telegramMsg = formatTenderMessage({
-        ...item,
-        deadline: deadlineDate.toISOString()
-      });
-      sendTelegramMessage(telegramMsg);
+      // Fire-and-forget Telegram notification
+      const msg = formatTenderMessage({ ...item, deadline: deadlineDate.toISOString() });
+      sendTelegramMessage(msg).catch(err =>
+        console.warn("⚠️ Telegram notification failed:", err instanceof Error ? err.message : err)
+      );
 
-      broadcast({
-        type: "new_tender",
-        data: {
-          id: newDoc.id,
-          ...tenderData
-        }
-      });
+      broadcast({ type: "new_tender", data: { id: newDoc.id, ...tenderData } });
     }
   }
 
@@ -380,38 +342,34 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
     new_tenders: newCount,
     total_found: raw.length
   });
-    
-  console.log(`✅ Scrape done: ${newCount} new tenders out of ${raw.length} found`);
-  
-  // Cleanup expired tenders
+
+  console.log(`✅ Scrape complete: ${newCount} new / ${raw.length} total`);
   await cleanupExpiredTenders();
 }
 
 async function cleanupExpiredTenders() {
   console.log("🧹 Cleaning up expired tenders...");
-  const tendersRef = adminDb.collection('tenders');
   const now = new Date();
   now.setHours(0, 0, 0, 0);
   const nowISO = now.toISOString();
 
   try {
-    const snapshot = await tendersRef.get();
-    let deletedCount = 0;
+    const snapshot = await adminDb.collection('tenders').get();
     const batch = adminDb.batch();
+    let count = 0;
 
     snapshot.docs.forEach((doc: any) => {
-      const data = doc.data();
-      if (data.deadline && data.deadline < nowISO) {
+      if (doc.data().deadline < nowISO) {
         batch.delete(doc.ref);
-        deletedCount++;
+        count++;
       }
     });
 
-    if (deletedCount > 0) {
+    if (count > 0) {
       await batch.commit();
-      console.log(`🗑️ Deleted ${deletedCount} expired tenders`);
+      console.log(`🗑️ Deleted ${count} expired tenders`);
     } else {
-      console.log("✨ No expired tenders found");
+      console.log("✨ No expired tenders");
     }
   } catch (e) {
     console.error("❌ Cleanup failed:", e);

@@ -1,62 +1,42 @@
 import firebaseConfigJson from '../../firebase-applet-config.json';
 
-export const getFirebaseConfig = () => {
-  // Safe check for environment variables in both Node.js and Browser
-  const isNode = typeof process !== 'undefined' && process.env;
-  const isVite = typeof import.meta !== 'undefined' && (import.meta as any).env;
-  const isBrowser = typeof window !== 'undefined';
+function resolveConfig() {
+  const isNode = typeof process !== 'undefined' && process.env != null;
+  const isVite = typeof import.meta !== 'undefined' && (import.meta as any).env != null;
+  const injected = typeof window !== 'undefined' ? (window as any).FIREBASE_CONFIG : null;
 
-  // Check for injected config from server (Production)
-  const injectedConfig = isBrowser ? (window as any).FIREBASE_CONFIG : null;
+  const apiKey =
+    (isNode && process.env.FIREBASE_API_KEY) ||
+    (isVite && (import.meta as any).env.VITE_FIREBASE_API_KEY) ||
+    injected?.apiKey ||
+    firebaseConfigJson.apiKey;
 
-  const envConfig = {
-    apiKey: (isNode ? process.env.FIREBASE_API_KEY : null) || 
-            (isVite ? (import.meta as any).env.VITE_FIREBASE_API_KEY : null) ||
-            (injectedConfig?.apiKey),
-    authDomain: (isNode ? process.env.FIREBASE_AUTH_DOMAIN : null) || 
-                (isVite ? (import.meta as any).env.VITE_FIREBASE_AUTH_DOMAIN : null) ||
-                (injectedConfig?.authDomain),
-    projectId: (isNode ? process.env.FIREBASE_PROJECT_ID : null) || 
-               (isVite ? (import.meta as any).env.VITE_FIREBASE_PROJECT_ID : null) ||
-               (injectedConfig?.projectId),
-    appId: (isNode ? process.env.FIREBASE_APP_ID : null) || 
-           (isVite ? (import.meta as any).env.VITE_FIREBASE_APP_ID : null) ||
-           (injectedConfig?.appId),
-    firestoreDatabaseId: (isNode ? process.env.FIREBASE_DATABASE_ID : null) || 
-                         (isVite ? (import.meta as any).env.VITE_FIREBASE_DATABASE_ID : null) ||
-                         (injectedConfig?.firestoreDatabaseId),
-  };
+  const projectId =
+    (isNode && process.env.FIREBASE_PROJECT_ID) ||
+    (isVite && (import.meta as any).env.VITE_FIREBASE_PROJECT_ID) ||
+    injected?.projectId ||
+    firebaseConfigJson.projectId;
 
-  // Prioritize environment variables if they are present
-  const hasEnv = envConfig.apiKey && envConfig.projectId;
+  const authDomain =
+    (isNode && process.env.FIREBASE_AUTH_DOMAIN) ||
+    (isVite && (import.meta as any).env.VITE_FIREBASE_AUTH_DOMAIN) ||
+    injected?.authDomain ||
+    firebaseConfigJson.authDomain;
 
-  if (hasEnv) {
-    console.log("🔥 Firebase: Using Environment Variables");
-    return {
-      ...envConfig,
-      firestoreDatabaseId: envConfig.firestoreDatabaseId || '(default)'
-    };
-  }
+  const appId =
+    (isNode && process.env.FIREBASE_APP_ID) ||
+    (isVite && (import.meta as any).env.VITE_FIREBASE_APP_ID) ||
+    injected?.appId ||
+    firebaseConfigJson.appId;
 
-  // Fallback to JSON file
-  const isJsonValid = firebaseConfigJson && 
-                     firebaseConfigJson.apiKey && 
-                     !firebaseConfigJson.apiKey.includes('TODO');
+  const firestoreDatabaseId =
+    (isNode && process.env.FIREBASE_DATABASE_ID) ||
+    (isVite && (import.meta as any).env.VITE_FIREBASE_DATABASE_ID) ||
+    injected?.firestoreDatabaseId ||
+    firebaseConfigJson.firestoreDatabaseId ||
+    '(default)';
 
-  if (isJsonValid) {
-    console.log("🔥 Firebase: Using local config file");
-    return {
-      ...firebaseConfigJson,
-      firestoreDatabaseId: firebaseConfigJson.firestoreDatabaseId || '(default)'
-    };
-  }
+  return { apiKey, authDomain, projectId, appId, firestoreDatabaseId };
+}
 
-  console.warn("⚠️ Firebase: No valid configuration found!");
-
-  return {
-    ...envConfig,
-    firestoreDatabaseId: envConfig.firestoreDatabaseId || '(default)'
-  };
-};
-
-export const firebaseConfig = getFirebaseConfig();
+export const firebaseConfig = resolveConfig();
