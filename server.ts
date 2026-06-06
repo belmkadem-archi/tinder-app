@@ -9,9 +9,6 @@ import { adminDbWrapper as adminDb } from "./src/lib/firebase-admin.js";
 import { scrapeAndNotify, checkConnectivity } from "./src/services/scraper.js";
 import { sendTelegramMessage } from "./src/services/telegram.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -195,6 +192,7 @@ app.post("/api/telegram/test", async (_req, res) => {
 // Wrapped in an async IIFE so there are zero top-level awaits — required for @vercel/node
 if (!process.env.VERCEL) {
   (async () => {
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const distPath = path.resolve(__dirname, 'dist');
     const isProduction = fs.existsSync(distPath);
 

@@ -1,14 +1,23 @@
-import { initializeApp, getApps } from 'firebase/app';
+import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
-  getFirestore,
+  getFirestore, type Firestore,
   collection, query, where, orderBy, limit,
   getDocs, getDoc, addDoc, updateDoc, setDoc, doc, writeBatch
 } from 'firebase/firestore';
 import { firebaseConfig } from './firebase-config.js';
 
-// Reuse existing app if already initialized (hot-reload safe)
-const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
-export const adminDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Lazy-initialize Firebase so any init error is deferred to request time,
+// not module load time — prevents the serverless function from crashing on boot.
+let _app: FirebaseApp | null = null;
+let _db: Firestore | null = null;
+
+function getDb(): Firestore {
+  if (!_db) {
+    _app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
+    _db = getFirestore(_app, firebaseConfig.firestoreDatabaseId);
+  }
+  return _db;
+}
 
 type WhereProxy = {
   limit: (n: number) => { get: () => Promise<any> };
@@ -18,14 +27,14 @@ type WhereProxy = {
 function makeWhereProxy(colPath: string, field: string, op: any, value: any): WhereProxy {
   return {
     limit: (n: number) => ({
-      get: () => getDocs(query(collection(adminDb, colPath), where(field, op, value), limit(n)))
+      get: () => getDocs(query(collection(getDb(), colPath), where(field, op, value), limit(n)))
     }),
-    get: () => getDocs(query(collection(adminDb, colPath), where(field, op, value)))
+    get: () => getDocs(query(collection(getDb(), colPath), where(field, op, value)))
   };
 }
 
 function makeDocProxy(colPath: string, id: string) {
-  const ref = doc(adminDb, colPath, id);
+  const ref = doc(getDb(), colPath, id);
   return {
     ref,
     get: async () => {
@@ -43,15 +52,15 @@ export const adminDbWrapper = {
   collection: (colPath: string) => ({
     where: (field: string, op: any, value: any) => makeWhereProxy(colPath, field, op, value),
     orderBy: (field: string, dir?: 'asc' | 'desc') => ({
-      get: () => getDocs(query(collection(adminDb, colPath), orderBy(field, dir)))
+      get: () => getDocs(query(collection(getDb(), colPath), orderBy(field, dir)))
     }),
-    get: () => getDocs(collection(adminDb, colPath)),
-    add: (data: any) => addDoc(collection(adminDb, colPath), data),
+    get: () => getDocs(collection(getDb(), colPath)),
+    add: (data: any) => addDoc(collection(getDb(), colPath), data),
     doc: (id: string) => makeDocProxy(colPath, id)
   }),
 
   batch: () => {
-    const b = writeBatch(adminDb);
+    const b = writeBatch(getDb());
     return {
       delete: (ref: any) => b.delete(ref),
       set: (ref: any, data: any) => b.set(ref, data),
