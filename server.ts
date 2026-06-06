@@ -191,39 +191,41 @@ app.post("/api/telegram/test", async (_req, res) => {
   }
 });
 
-// Serve frontend
-const distPath = path.resolve(__dirname, 'dist');
-const isProduction = fs.existsSync(distPath);
+// Serve frontend (local only — on Vercel, static files are served by the CDN layer)
+if (!process.env.VERCEL) {
+  const distPath = path.resolve(__dirname, 'dist');
+  const isProduction = fs.existsSync(distPath);
 
-console.log(`🌍 Mode: ${isProduction ? 'Production' : 'Development'}`);
+  console.log(`🌍 Mode: ${isProduction ? 'Production' : 'Development'}`);
 
-if (!isProduction) {
-  const { createServer: createViteServer } = await import("vite");
-  const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
-  app.use(vite.middlewares);
-} else {
-  app.use(express.static(distPath));
-  app.get('*', (_req, res) => {
-    const indexPath = path.join(distPath, 'index.html');
-    if (!fs.existsSync(indexPath)) {
-      res.status(404).send("Frontend build not found.");
-      return;
-    }
-    try {
-      const config = {
-        apiKey: process.env.FIREBASE_API_KEY || "",
-        authDomain: process.env.FIREBASE_AUTH_DOMAIN || "",
-        projectId: process.env.FIREBASE_PROJECT_ID || "",
-        appId: process.env.FIREBASE_APP_ID || "",
-        firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "(default)"
-      };
-      let html = fs.readFileSync(indexPath, 'utf8');
-      html = html.replace('<head>', `<head><script>window.FIREBASE_CONFIG=${JSON.stringify(config)};</script>`);
-      res.send(html);
-    } catch {
-      res.sendFile(indexPath);
-    }
-  });
+  if (!isProduction) {
+    const { createServer: createViteServer } = await import("vite");
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      const indexPath = path.join(distPath, 'index.html');
+      if (!fs.existsSync(indexPath)) {
+        res.status(404).send("Frontend build not found.");
+        return;
+      }
+      try {
+        const config = {
+          apiKey: process.env.FIREBASE_API_KEY || "",
+          authDomain: process.env.FIREBASE_AUTH_DOMAIN || "",
+          projectId: process.env.FIREBASE_PROJECT_ID || "",
+          appId: process.env.FIREBASE_APP_ID || "",
+          firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "(default)"
+        };
+        let html = fs.readFileSync(indexPath, 'utf8');
+        html = html.replace('<head>', `<head><script>window.FIREBASE_CONFIG=${JSON.stringify(config)};</script>`);
+        res.send(html);
+      } catch {
+        res.sendFile(indexPath);
+      }
+    });
+  }
 }
 
 // Auto-scrape every 30 minutes (not on Vercel — serverless functions can't run cron)
