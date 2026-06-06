@@ -35,10 +35,6 @@
       "dest": "index.html"
     }
   ],
-  "crons": [
-    {
-      "path": "/api/scrape/trigger",
-      "schedule": "0 * * * *"
-    }
+  
   ]
 }
