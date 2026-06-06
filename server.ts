@@ -7,6 +7,7 @@ import fs from "fs";
 import cron from "node-cron";
 import { adminDbWrapper as adminDb } from "./src/lib/firebase-admin.js";
 import { scrapeAndNotify, checkConnectivity, fillMissingBudgets } from "./src/services/scraper.js";
+import { scrapeAndNotifyBdc } from "./src/services/bdc-scraper.js";
 import { sendTelegramMessage } from "./src/services/telegram.js";
 
 const app = express();
@@ -159,6 +160,87 @@ app.all("/api/scrape/trigger", (_req, res) => {
   const broadcast = (msg: any) => console.log("📢 Broadcast:", msg.type);
   scrapeAndNotify(broadcast, true).catch(err => console.error("❌ Scrape failed:", err));
   res.json({ message: "Scraping started" });
+});
+
+// ── Bons de Commande endpoints ───────────────────────────────────────────────
+
+app.get("/api/bdc", async (req, res) => {
+  const { page = 1, size = 20, category, region, search } = req.query;
+  try {
+    const snapshot = await adminDb.collection('bons_commande').get();
+    let items: any[] = snapshot.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+
+    if (category && category !== 'All')
+      items = items.filter(i => i.category === category);
+    if (region && region !== 'All')
+      items = items.filter(i => i.region === region);
+    if (search) {
+      const q = String(search).toLowerCase();
+      items = items.filter(i =>
+        i.title?.toLowerCase().includes(q) ||
+        i.organization?.toLowerCase().includes(q) ||
+        i.reference?.toLowerCase().includes(q)
+      );
+    }
+
+    items.sort((a, b) =>
+      new Date(b.published_at || b.date).getTime() - new Date(a.published_at || a.date).getTime()
+    );
+
+    const total = items.length;
+    const offset = (Number(page) - 1) * Number(size);
+    res.json({ total, page: Number(page), size: Number(size), items: items.slice(offset, offset + Number(size)) });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch bons de commande", details: String(error) });
+  }
+});
+
+app.get("/api/bdc/stats", async (_req, res) => {
+  try {
+    const snapshot = await adminDb.collection('bons_commande').get();
+    const items: any[] = snapshot.docs.map((d: any) => d.data());
+    const lastScrapeDoc = await adminDb.collection('stats').doc('last_bdc_scrape').get();
+    const lastScrape = lastScrapeDoc.exists ? lastScrapeDoc.data() : null;
+
+    const categories: Record<string, number> = {};
+    const regions: Record<string, number> = {};
+    let totalAmount = 0, amountCount = 0;
+
+    for (const item of items) {
+      if (item.category) categories[item.category] = (categories[item.category] || 0) + 1;
+      if (item.region) regions[item.region] = (regions[item.region] || 0) + 1;
+      if (item.amount) { totalAmount += item.amount; amountCount++; }
+    }
+
+    res.json({
+      total_bdc: items.length,
+      by_category: Object.entries(categories).map(([category, count]) => ({ category, count })),
+      by_region: Object.entries(regions).map(([region, count]) => ({ region, count })),
+      avg_amount: amountCount > 0 ? Math.round(totalAmount / amountCount) : 0,
+      total_amount: totalAmount,
+      last_scrape: lastScrape
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get("/api/bdc/filters", async (_req, res) => {
+  try {
+    const snapshot = await adminDb.collection('bons_commande').get();
+    const items: any[] = snapshot.docs.map((d: any) => d.data());
+    const categories = [...new Set(items.map(i => i.category).filter(Boolean))].sort();
+    const regions = [...new Set(items.map(i => i.region).filter(Boolean))].sort();
+    res.json({ categories, regions });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.all("/api/bdc/scrape", (_req, res) => {
+  const broadcast = (msg: any) => console.log("📢 BDC:", msg.type);
+  scrapeAndNotifyBdc(broadcast).catch(err => console.error("❌ BDC scrape failed:", err));
+  res.json({ message: "BDC scraping started" });
 });
 
 // Fetch budget from detail pages for tenders that are missing it.
