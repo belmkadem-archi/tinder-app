@@ -235,21 +235,32 @@ export async function scrapePmmp(isQuick: boolean = false): Promise<any[]> {
 
   try {
     console.log("🕵️ Starting PMMP scrape...");
+    // Main search: paginate through all results
     let currentUrl: string | null = SEARCH_URL;
     let pagesProcessed = 0;
-    const maxPages = isQuick ? 8 : 20;
+    const maxPages = isQuick ? 25 : 60;
 
     while (currentUrl && pagesProcessed < maxPages) {
       currentUrl = await scrapeUrl(currentUrl, tenders, seenRefs, cookies, isQuick);
       pagesProcessed++;
-      if (currentUrl) await new Promise(r => setTimeout(r, 800));
+      if (currentUrl) await new Promise(r => setTimeout(r, 300));
     }
+    console.log(`📄 Main search: ${pagesProcessed} pages, ${tenders.length} tenders so far`);
 
-    const sectorsToScrape = isQuick ? SECTORS.slice(0, 12) : SECTORS;
+    // Sector searches: also paginate (up to 3 pages each) to catch sector-specific listings
+    const sectorsToScrape = isQuick ? SECTORS.slice(0, 8) : SECTORS;
+    const maxPagesPerSector = isQuick ? 2 : 4;
     for (const sector of sectorsToScrape) {
-      await scrapeUrl(`${SEARCH_URL}&domaineActivite=${sector}`, tenders, seenRefs, cookies, isQuick);
-      await new Promise(r => setTimeout(r, 400));
+      let sectorUrl: string | null = `${SEARCH_URL}&domaineActivite=${sector}`;
+      let sectorPages = 0;
+      while (sectorUrl && sectorPages < maxPagesPerSector) {
+        sectorUrl = await scrapeUrl(sectorUrl, tenders, seenRefs, cookies, isQuick);
+        sectorPages++;
+        if (sectorUrl) await new Promise(r => setTimeout(r, 200));
+      }
+      await new Promise(r => setTimeout(r, 150));
     }
+    console.log(`📦 Total after sector scrape: ${tenders.length} unique tenders`);
   } catch (e) {
     console.warn("⚠️ Scrape loop error:", e);
   }
@@ -302,7 +313,12 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
   const tendersRef = adminDb.collection('tenders');
   console.log(`📦 Processing ${raw.length} tenders...`);
 
-  for (const item of raw) {
+  // The portal lists tenders newest-first. raw[0] = most recently published.
+  // Assign timestamps with a 1-second offset per position so sort order matches portal order.
+  const scrapeBaseTime = Date.now();
+
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
     const deadlineDate = parseDeadline(item.deadline);
 
     // Skip already-expired live tenders
@@ -311,6 +327,9 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
     const snapshot = await tendersRef.where('reference', '==', item.reference).limit(1).get();
     const existingDoc = snapshot.empty ? null : snapshot.docs[0];
     const existingData = existingDoc ? existingDoc.data() : null;
+
+    // index 0 = most recently published on portal → gets highest timestamp
+    const portalOrderTime = new Date(scrapeBaseTime - i * 1000).toISOString();
 
     const tenderData = {
       title: item.title,
@@ -323,7 +342,8 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
       url: item.url,
       is_live: item.is_live === true,
       reference: item.reference,
-      published_at: existingData?.published_at ?? new Date().toISOString()
+      // New tenders: use portal-order timestamp. Existing: keep original so relative order is stable.
+      published_at: existingData?.published_at ?? portalOrderTime
     };
 
     if (existingDoc) {
