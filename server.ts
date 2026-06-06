@@ -6,7 +6,7 @@ import cors from "cors";
 import fs from "fs";
 import cron from "node-cron";
 import { adminDbWrapper as adminDb } from "./src/lib/firebase-admin.js";
-import { scrapeAndNotify, checkConnectivity } from "./src/services/scraper.js";
+import { scrapeAndNotify, checkConnectivity, fillMissingBudgets } from "./src/services/scraper.js";
 import { sendTelegramMessage } from "./src/services/telegram.js";
 
 const app = express();
@@ -159,6 +159,17 @@ app.all("/api/scrape/trigger", (_req, res) => {
   const broadcast = (msg: any) => console.log("📢 Broadcast:", msg.type);
   scrapeAndNotify(broadcast, true).catch(err => console.error("❌ Scrape failed:", err));
   res.json({ message: "Scraping started" });
+});
+
+// Fetch budget from detail pages for tenders that are missing it.
+// Runs in its own serverless invocation (separate 10s budget from the main scrape).
+app.post("/api/budgets/fill", async (_req, res) => {
+  try {
+    const result = await fillMissingBudgets(50);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
 });
 
 app.post("/api/cleanup/trigger", async (_req, res) => {

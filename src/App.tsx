@@ -179,11 +179,20 @@ export default function App() {
 
   const handleTriggerScrape = async () => {
     setIsScraping(true);
+    // Step 1: trigger scrape (fire-and-forget on the server)
     await fetch('/api/scrape/trigger', { method: 'POST' });
-    setTimeout(() => {
-      setIsScraping(false);
-      fetchData();
-    }, 2000);
+    // Step 2: wait for tenders to land in Firestore, then fill budgets
+    // Each /api/budgets/fill call processes 50 tenders in parallel (10 concurrent)
+    await new Promise(r => setTimeout(r, 4000));
+    for (let i = 0; i < 6; i++) {
+      try {
+        const res = await fetch('/api/budgets/fill', { method: 'POST' });
+        const data = await res.json();
+        if (!data.remaining) break; // all budgets filled
+      } catch { break; }
+    }
+    await fetchData();
+    setIsScraping(false);
   };
 
   useEffect(() => {

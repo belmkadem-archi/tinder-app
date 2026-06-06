@@ -398,6 +398,44 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
   await cleanupExpiredTenders();
 }
 
+// Fetch budget from detail pages in parallel for tenders that don't have one yet.
+// Called as a separate serverless function so it has its own execution budget.
+export async function fillMissingBudgets(limit = 50): Promise<{ filled: number; processed: number; remaining: number }> {
+  const snapshot = await adminDb.collection('tenders').get();
+  const missing = snapshot.docs.filter((d: any) => {
+    const data = d.data();
+    return data.budget == null && data.url && data.is_live;
+  });
+
+  const toProcess = missing.slice(0, limit);
+  if (toProcess.length === 0) return { filled: 0, processed: 0, remaining: 0 };
+
+  const cookies = await getSessionCookies();
+  const CONCURRENCY = 10;
+  let filled = 0;
+
+  for (let i = 0; i < toProcess.length; i += CONCURRENCY) {
+    const chunk = toProcess.slice(i, i + CONCURRENCY);
+    const budgets = await Promise.all(
+      chunk.map((d: any) => scrapeTenderDetails(d.data().url, cookies))
+    );
+
+    const updates = chunk
+      .map((d: any, j: number) => ({ ref: d.ref, budget: budgets[j] }))
+      .filter(u => u.budget !== null);
+
+    if (updates.length > 0) {
+      const batch = adminDb.batch();
+      updates.forEach(({ ref, budget }) => batch.update(ref, { budget }));
+      await batch.commit();
+      filled += updates.length;
+    }
+  }
+
+  console.log(`💰 Budget fill: ${filled} filled / ${toProcess.length} processed`);
+  return { filled, processed: toProcess.length, remaining: missing.length - toProcess.length };
+}
+
 async function cleanupExpiredTenders() {
   console.log("🧹 Cleaning up expired tenders...");
   const now = new Date();
