@@ -191,59 +191,58 @@ app.post("/api/telegram/test", async (_req, res) => {
   }
 });
 
-// Serve frontend (local only — on Vercel, static files are served by the CDN layer)
+// Local-only setup (Vercel handles static files via CDN and has no persistent process)
+// Wrapped in an async IIFE so there are zero top-level awaits — required for @vercel/node
 if (!process.env.VERCEL) {
-  const distPath = path.resolve(__dirname, 'dist');
-  const isProduction = fs.existsSync(distPath);
+  (async () => {
+    const distPath = path.resolve(__dirname, 'dist');
+    const isProduction = fs.existsSync(distPath);
 
-  console.log(`🌍 Mode: ${isProduction ? 'Production' : 'Development'}`);
+    console.log(`🌍 Mode: ${isProduction ? 'Production' : 'Development'}`);
 
-  if (!isProduction) {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      const indexPath = path.join(distPath, 'index.html');
-      if (!fs.existsSync(indexPath)) {
-        res.status(404).send("Frontend build not found.");
-        return;
-      }
-      try {
-        const config = {
-          apiKey: process.env.FIREBASE_API_KEY || "",
-          authDomain: process.env.FIREBASE_AUTH_DOMAIN || "",
-          projectId: process.env.FIREBASE_PROJECT_ID || "",
-          appId: process.env.FIREBASE_APP_ID || "",
-          firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "(default)"
-        };
-        let html = fs.readFileSync(indexPath, 'utf8');
-        html = html.replace('<head>', `<head><script>window.FIREBASE_CONFIG=${JSON.stringify(config)};</script>`);
-        res.send(html);
-      } catch {
-        res.sendFile(indexPath);
-      }
+    if (!isProduction) {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+      app.use(vite.middlewares);
+    } else {
+      app.use(express.static(distPath));
+      app.get('*', (_req, res) => {
+        const indexPath = path.join(distPath, 'index.html');
+        if (!fs.existsSync(indexPath)) {
+          res.status(404).send("Frontend build not found.");
+          return;
+        }
+        try {
+          const config = {
+            apiKey: process.env.FIREBASE_API_KEY || "",
+            authDomain: process.env.FIREBASE_AUTH_DOMAIN || "",
+            projectId: process.env.FIREBASE_PROJECT_ID || "",
+            appId: process.env.FIREBASE_APP_ID || "",
+            firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "(default)"
+          };
+          let html = fs.readFileSync(indexPath, 'utf8');
+          html = html.replace('<head>', `<head><script>window.FIREBASE_CONFIG=${JSON.stringify(config)};</script>`);
+          res.send(html);
+        } catch {
+          res.sendFile(indexPath);
+        }
+      });
+    }
+
+    cron.schedule('*/30 * * * *', () => {
+      console.log("⏰ Cron: scheduled scrape starting...");
+      const broadcast = (msg: any) => console.log("📢 Cron:", msg.type);
+      scrapeAndNotify(broadcast, false).catch(err => console.error("❌ Cron scrape failed:", err));
     });
-  }
-}
+    console.log("⏰ Cron scheduler active — scrape every 30 minutes");
 
-// Auto-scrape every 30 minutes (not on Vercel — serverless functions can't run cron)
-if (!process.env.VERCEL) {
-  cron.schedule('*/30 * * * *', () => {
-    console.log("⏰ Cron: scheduled scrape starting...");
-    const broadcast = (msg: any) => console.log("📢 Cron:", msg.type);
-    scrapeAndNotify(broadcast, false).catch(err => console.error("❌ Cron scrape failed:", err));
-  });
-  console.log("⏰ Cron scheduler active — scrape every 30 minutes");
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Server → http://localhost:${PORT}`);
-    // Run an initial quick scrape on startup so Firestore is populated immediately
-    console.log("🔍 Running startup scrape...");
-    const broadcast = (msg: any) => console.log("📢 Startup:", msg.type);
-    scrapeAndNotify(broadcast, true).catch(err => console.error("❌ Startup scrape failed:", err));
-  });
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server → http://localhost:${PORT}`);
+      console.log("🔍 Running startup scrape...");
+      const broadcast = (msg: any) => console.log("📢 Startup:", msg.type);
+      scrapeAndNotify(broadcast, true).catch(err => console.error("❌ Startup scrape failed:", err));
+    });
+  })();
 }
 
 export default app;
