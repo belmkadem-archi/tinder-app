@@ -305,70 +305,96 @@ function parseDeadline(raw: string): Date {
   return addDays(new Date(), 30);
 }
 
+const FIRESTORE_BATCH_LIMIT = 400; // stay under the 500-op Firestore limit
+
 export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: boolean = false) {
   console.log(`🔍 Scraping PMMP... [${format(new Date(), 'HH:mm:ss')}] (quick=${isQuick})`);
   const raw = await scrapePmmp(isQuick);
-  let newCount = 0;
 
-  const tendersRef = adminDb.collection('tenders');
+  const tendersCol = adminDb.collection('tenders');
   console.log(`📦 Processing ${raw.length} tenders...`);
 
-  // The portal lists tenders newest-first. raw[0] = most recently published.
-  // Assign timestamps with a 1-second offset per position so sort order matches portal order.
+  // ── Step 1: fetch all existing tenders in ONE read ──────────────────────
+  const existingSnapshot = await tendersCol.get();
+  const existingByRef = new Map<string, { id: string; data: any }>();
+  existingSnapshot.docs.forEach((d: any) => {
+    const data = d.data();
+    if (data.reference) existingByRef.set(data.reference, { id: d.id, data });
+  });
+
+  // ── Step 2: classify tenders as insert / update ──────────────────────────
+  // Portal lists newest-first → index 0 = most recently published
   const scrapeBaseTime = Date.now();
+  const now = new Date();
+
+  const toInsert: { ref: any; data: any; item: any }[] = [];
+  const toUpdate: { id: string; data: any }[] = [];
 
   for (let i = 0; i < raw.length; i++) {
     const item = raw[i];
     const deadlineDate = parseDeadline(item.deadline);
+    if (deadlineDate < now && item.is_live) continue;
 
-    // Skip already-expired live tenders
-    if (deadlineDate < new Date() && item.is_live) continue;
-
-    const snapshot = await tendersRef.where('reference', '==', item.reference).limit(1).get();
-    const existingDoc = snapshot.empty ? null : snapshot.docs[0];
-    const existingData = existingDoc ? existingDoc.data() : null;
-
-    // index 0 = most recently published on portal → gets highest timestamp
+    const existing = existingByRef.get(item.reference);
     const portalOrderTime = new Date(scrapeBaseTime - i * 1000).toISOString();
 
     const tenderData = {
       title: item.title,
-      organization: item.organization,
-      category: item.category || "Non spécifié",
-      region: item.region || "National",
+      organization: item.organization || 'Organisme Public',
+      category: item.category || 'Non spécifié',
+      region: item.region || 'National',
       deadline: deadlineDate.toISOString(),
-      // Preserve an already-fetched budget when quick mode returns null
-      budget: item.budget ?? existingData?.budget ?? null,
+      budget: item.budget ?? existing?.data?.budget ?? null,
       url: item.url,
       is_live: item.is_live === true,
       reference: item.reference,
-      // New tenders: use portal-order timestamp. Existing: keep original so relative order is stable.
-      published_at: existingData?.published_at ?? portalOrderTime
+      published_at: existing?.data?.published_at ?? portalOrderTime
     };
 
-    if (existingDoc) {
-      await tendersRef.doc(existingDoc.id).update(tenderData);
+    if (existing) {
+      toUpdate.push({ id: existing.id, data: tenderData });
     } else {
-      const newDoc = await tendersRef.add(tenderData);
-      newCount++;
-
-      // Fire-and-forget Telegram notification
-      const msg = formatTenderMessage({ ...item, deadline: deadlineDate.toISOString() });
-      sendTelegramMessage(msg).catch(err =>
-        console.warn("⚠️ Telegram notification failed:", err instanceof Error ? err.message : err)
-      );
-
-      broadcast({ type: "new_tender", data: { id: newDoc.id, ...tenderData } });
+      toInsert.push({ ref: tendersCol.newDocRef(), data: tenderData, item });
     }
   }
 
+  // ── Step 3: batch-write inserts (max 400 per batch) ─────────────────────
+  for (let i = 0; i < toInsert.length; i += FIRESTORE_BATCH_LIMIT) {
+    const chunk = toInsert.slice(i, i + FIRESTORE_BATCH_LIMIT);
+    const batch = adminDb.batch();
+    for (const { ref, data } of chunk) {
+      batch.set(ref, data);
+    }
+    await batch.commit();
+
+    // Telegram notifications for new tenders (fire-and-forget)
+    for (const { item, data } of chunk) {
+      const msg = formatTenderMessage({ ...item, deadline: data.deadline });
+      sendTelegramMessage(msg).catch(err =>
+        console.warn('⚠️ Telegram failed:', err instanceof Error ? err.message : err)
+      );
+      broadcast({ type: 'new_tender', data });
+    }
+  }
+
+  // ── Step 4: batch-write updates ──────────────────────────────────────────
+  for (let i = 0; i < toUpdate.length; i += FIRESTORE_BATCH_LIMIT) {
+    const chunk = toUpdate.slice(i, i + FIRESTORE_BATCH_LIMIT);
+    const batch = adminDb.batch();
+    for (const { id, data } of chunk) {
+      batch.update(tendersCol.doc(id).ref, data);
+    }
+    await batch.commit();
+  }
+
+  const newCount = toInsert.length;
   await adminDb.collection('stats').doc('last_scrape').set({
     scraped_at: new Date().toISOString(),
     new_tenders: newCount,
     total_found: raw.length
   });
 
-  console.log(`✅ Scrape complete: ${newCount} new / ${raw.length} total`);
+  console.log(`✅ Scrape complete: ${newCount} new / ${toUpdate.length} updated / ${raw.length} total`);
   await cleanupExpiredTenders();
 }
 

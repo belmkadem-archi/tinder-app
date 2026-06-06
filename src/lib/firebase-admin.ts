@@ -56,7 +56,9 @@ export const adminDbWrapper = {
     }),
     get: () => getDocs(collection(getDb(), colPath)),
     add: (data: any) => addDoc(collection(getDb(), colPath), data),
-    doc: (id: string) => makeDocProxy(colPath, id)
+    doc: (id: string) => makeDocProxy(colPath, id),
+    // Returns a new DocumentReference with an auto-generated ID (for batch inserts)
+    newDocRef: () => doc(collection(getDb(), colPath))
   }),
 
   batch: () => {
