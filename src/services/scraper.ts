@@ -318,7 +318,8 @@ export async function scrapeAndNotify(broadcast: (msg: any) => void, isQuick: bo
       category: item.category || "Non spécifié",
       region: item.region || "National",
       deadline: deadlineDate.toISOString(),
-      budget: item.budget ?? null,
+      // Preserve an already-fetched budget when quick mode returns null
+      budget: item.budget ?? existingData?.budget ?? null,
       url: item.url,
       is_live: item.is_live === true,
       reference: item.reference,

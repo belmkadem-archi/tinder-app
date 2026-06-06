@@ -156,18 +156,22 @@ export default function App() {
     if (viewMode === 'urgent') {
       const now = new Date();
       now.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(now);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      tomorrow.setHours(23, 59, 59, 999);
-
+      const in7days = new Date(now);
+      in7days.setDate(in7days.getDate() + 7);
+      in7days.setHours(23, 59, 59, 999);
       result = result.filter(t => {
         const deadline = new Date(t.deadline);
-        return deadline >= now && deadline <= tomorrow;
+        return deadline >= now && deadline <= in7days;
       });
+      result.sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
     } else if (viewMode === 'newest') {
-      result = result.sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime()).slice(0, 10);
+      result.sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+      result = result.slice(0, 10);
     } else if (viewMode === 'by_urgency') {
-      result = result.sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
+      result.sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
+    } else {
+      // Default 'all': newest published first
+      result.sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
     }
 
     return result;
@@ -194,7 +198,7 @@ export default function App() {
   }, [autoSync]);
 
   const formatCurrency = (amount: number | null) => {
-    if (!amount) return "N/A";
+    if (amount == null) return "N/A";
     return new Intl.NumberFormat('fr-MA', { style: 'currency', currency: 'MAD', maximumFractionDigits: 0 }).format(amount);
   };
 
