@@ -292,4 +292,31 @@ export async function scrapeAndNotifyBdc(broadcast: (msg: any) => void) {
   });
 
   console.log(`✅ BDC complete: ${toInsert.length} new / ${raw.length} total`);
+  await cleanupExpiredBdc();
+}
+
+async function cleanupExpiredBdc() {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const nowISO = now.toISOString();
+
+  try {
+    const snapshot = await adminDb.collection('bons_commande').get();
+    const batch = adminDb.batch();
+    let count = 0;
+
+    snapshot.docs.forEach((d: any) => {
+      if (d.data().date < nowISO) {
+        batch.delete(d.ref);
+        count++;
+      }
+    });
+
+    if (count > 0) {
+      await batch.commit();
+      console.log(`🗑️ Deleted ${count} expired BDC`);
+    }
+  } catch (e) {
+    console.error('❌ BDC cleanup failed:', e);
+  }
 }

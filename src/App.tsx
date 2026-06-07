@@ -505,7 +505,7 @@ export default function App() {
                             </div>
                             <div className="flex items-center gap-2">
                               <div className="text-right">
-                                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Date</p>
+                                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Date limite</p>
                                 <p className="text-sm font-bold text-gray-600 flex items-center gap-1 px-2 py-1 bg-gray-50 rounded-md">
                                   <Calendar className="w-3.5 h-3.5" />{formatDate(bdc.date)}
                                 </p>

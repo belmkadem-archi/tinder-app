@@ -168,7 +168,12 @@ app.get("/api/bdc", async (req, res) => {
   const { page = 1, size = 20, category, region, search } = req.query;
   try {
     const snapshot = await adminDb.collection('bons_commande').get();
-    let items: any[] = snapshot.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    let items: any[] = snapshot.docs
+      .map((d: any) => ({ id: d.id, ...d.data() }))
+      .filter(i => new Date(i.date) >= now); // hide expired BDC
 
     if (category && category !== 'All')
       items = items.filter(i => i.category === category);
